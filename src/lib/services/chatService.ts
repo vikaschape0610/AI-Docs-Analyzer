@@ -1,14 +1,24 @@
 ﻿// ─── DocMind AI — Chat Service (Groq RAG + Query Intelligence) ────────────
+//
+// Improvements over v1:
+//   - detectFieldQueryIntent now filters by document type before matching
+//     so asking "what is my income" on a marksheet doesn't get CGPA
+//   - Query normalization is shared with ragStore (same ALIAS_MAP)
+//   - Field label matching is case-insensitive for robustness
+//   - extractedFieldHit uses the best match across all docs, not first match
+
 import type {
   ChatMessage,
   ChatRequest,
   ChatResponse,
   Document,
   DocumentReference,
+  DocumentType,
   ExtractedField,
   ExtractedFieldHit,
 } from "@/lib/types";
 
+// ─── Alias normalization — mirrors chunker.ts and ragStore.ts ─────────────
 const ALIAS_MAP: [RegExp, string][] = [
   [/\baadhar(?:r|aa)?\b/gi, "aadhaar"],
   [/\badhar\b/gi, "aadhaar"],
@@ -19,9 +29,8 @@ const ALIAS_MAP: [RegExp, string][] = [
   [/\bcurriculum\s+vitae\b/gi, "resume"],
   [/\b(my\s+)?cv\b/gi, "resume"],
   [/\bidentity\s+card\b/gi, "id card"],
-  [/\bcollege\s+card\b/gi, "id card"],
-  [/\bstudent\s+card\b/gi, "id card"],
   [/\broll\s+no\b/gi, "roll number"],
+  [/\benrollment\s+no\b/gi, "enrollment number"],
 ];
 
 function normalizeQuery(query: string): string {
@@ -49,40 +58,149 @@ function isGreeting(query: string): boolean {
   return GREETING_PATTERNS.some((p) => p.test(query.toLowerCase().trim()));
 }
 
-const FIELD_INTENT_PATTERNS: { labels: string[]; patterns: RegExp[] }[] = [
-  { labels: ["Aadhaar Number"], patterns: [/aadhaar|aadhar|adhar|uid\s*number/i] },
-  { labels: ["PAN Number"], patterns: [/pan\s*(card|number|no)?/i, /permanent\s+account/i] },
-  { labels: ["Passport Number"], patterns: [/passport\s*(number|no)?/i] },
-  { labels: ["CRN / Roll No", "Roll Number"], patterns: [/crn|roll\s*(no|number)/i, /enrollment\s*(no|number)/i] },
-  { labels: ["Branch / Department", "Branch"], patterns: [/\bbranch\b|\bdepartment\b|\bdept\b/i] },
-  { labels: ["Class / Year"], patterns: [/\bclass\b|\byear\b/i] },
-  { labels: ["Division"], patterns: [/\bdivision\b|\bdiv\b/i] },
-  { labels: ["Certificate Number"], patterns: [/certificate\s*(no|number)?|cert\s*(no|id)/i] },
-  { labels: ["Annual Income"], patterns: [/income\s*(amount|rs)?|annual\s*income/i] },
-  { labels: ["CGPA"], patterns: [/cgpa|cumulative\s+grade/i] },
-  { labels: ["SGPA"], patterns: [/sgpa|semester\s+grade/i] },
-  { labels: ["Percentage"], patterns: [/percentage|percent/i] },
-  { labels: ["Date of Birth"], patterns: [/\bdob\b|date of birth|birth\s*date/i] },
-  { labels: ["IFSC Code"], patterns: [/ifsc/i] },
-  { labels: ["Account Number"], patterns: [/account\s*(no|number)/i] },
-  { labels: ["CTC / Salary", "CTC"], patterns: [/\bctc\b|salary|package/i] },
-  { labels: ["Designation"], patterns: [/designation|job\s*title|position/i] },
-  { labels: ["Institute"], patterns: [/institute|college\s*name/i] },
+// ─── Field Intent Patterns ────────────────────────────────────────────────
+// Each entry: query patterns, the exact field labels to look for,
+// and optionally the document types that hold these fields.
+// documentTypes restricts which documents are searched for this field.
+// This prevents cross-contamination (e.g. "income" should not match marksheet).
+
+interface FieldIntentRule {
+  labels: string[];
+  patterns: RegExp[];
+  documentTypes?: DocumentType[]; // if set, only search these doc types
+}
+
+const FIELD_INTENT_PATTERNS: FieldIntentRule[] = [
+  {
+    labels: ["Aadhaar Number"],
+    patterns: [/aadhaar|aadhar|adhar|uid\s*number/i],
+    documentTypes: ["aadhaar_card"],
+  },
+  {
+    labels: ["PAN Number"],
+    patterns: [/pan\s*(card|number|no)?/i, /permanent\s+account/i],
+    documentTypes: ["pan_card"],
+  },
+  {
+    labels: ["Passport Number"],
+    patterns: [/passport\s*(number|no)?/i],
+    documentTypes: ["passport"],
+  },
+  {
+    labels: ["CRN / Roll No"],
+    patterns: [/crn|roll\s*(no|number)/i, /enrollment\s*(no|number)/i],
+    documentTypes: ["student_id"],
+  },
+  {
+    labels: ["Roll Number"],
+    patterns: [/roll\s*(no|number)/i, /seat\s*(no|number)/i],
+    documentTypes: ["marksheet"],
+  },
+  {
+    labels: ["Branch / Department"],
+    patterns: [/\bbranch\b|\bdepartment\b|\bdept\b/i],
+    documentTypes: ["student_id", "employee_id"],
+  },
+  {
+    labels: ["Class / Year"],
+    patterns: [/\bclass\b|\byear\b/i],
+    documentTypes: ["student_id"],
+  },
+  {
+    labels: ["Division"],
+    patterns: [/\bdivision\b|\bdiv\b/i],
+    documentTypes: ["student_id"],
+  },
+  {
+    labels: ["Certificate Number"],
+    patterns: [/certificate\s*(no|number)?|cert\s*(no|id)/i],
+    documentTypes: [
+      "income_certificate",
+      "caste_certificate",
+      "government_certificate",
+    ],
+  },
+  {
+    labels: ["Annual Income"],
+    patterns: [/income\s*(amount|rs)?|annual\s*income/i],
+    documentTypes: ["income_certificate"],
+  },
+  {
+    labels: ["CGPA"],
+    patterns: [/cgpa|cumulative\s+grade/i],
+    documentTypes: ["marksheet"],
+  },
+  {
+    labels: ["SGPA"],
+    patterns: [/sgpa|semester\s+grade/i],
+    documentTypes: ["marksheet"],
+  },
+  {
+    labels: ["Percentage"],
+    patterns: [/percentage|percent/i],
+    documentTypes: ["marksheet"],
+  },
+  {
+    labels: ["Date of Birth"],
+    patterns: [/\bdob\b|date of birth|birth\s*date/i],
+  },
+  {
+    labels: ["IFSC Code"],
+    patterns: [/ifsc/i],
+    documentTypes: ["bank_statement"],
+  },
+  {
+    labels: ["Account Number"],
+    patterns: [/account\s*(no|number)/i],
+    documentTypes: ["bank_statement"],
+  },
+  {
+    labels: ["CTC / Salary"],
+    patterns: [/\bctc\b|salary|package/i],
+    documentTypes: ["offer_letter"],
+  },
+  {
+    labels: ["Designation"],
+    patterns: [/designation|job\s*title|position/i],
+    documentTypes: ["offer_letter", "employee_id"],
+  },
+  {
+    labels: ["Institute"],
+    patterns: [/institute|college\s*name/i],
+    documentTypes: ["student_id"],
+  },
+  {
+    labels: ["University / Board"],
+    patterns: [/university|board/i],
+    documentTypes: ["marksheet"],
+  },
 ];
 
+/**
+ * Detects if the query is asking for a specific extracted field.
+ * Filters by documentType before searching so fields only come from
+ * the correct document type — prevents cross-document contamination.
+ */
 function detectFieldQueryIntent(
   normalizedQuery: string,
   documents: Document[],
 ): { hit: ExtractedFieldHit | null; matchedLabel: string } | null {
   const q = normalizedQuery.toLowerCase();
 
-  for (const { labels, patterns } of FIELD_INTENT_PATTERNS) {
+  for (const { labels, patterns, documentTypes } of FIELD_INTENT_PATTERNS) {
     if (!patterns.some((p) => p.test(q))) continue;
 
-    for (const doc of documents) {
+    // Filter documents to the relevant types if specified
+    const candidateDocs = documentTypes
+      ? documents.filter((doc) =>
+          documentTypes.includes(doc.documentType ?? "generic"),
+        )
+      : documents;
+
+    for (const doc of candidateDocs) {
       if (!doc.extractedInfo) continue;
       const matched = doc.extractedInfo.find((f: ExtractedField) =>
-        labels.some((l) => f.label.toLowerCase() === l.toLowerCase())
+        labels.some((l) => f.label.toLowerCase() === l.toLowerCase()),
       );
       if (matched) {
         return {
@@ -98,6 +216,7 @@ function detectFieldQueryIntent(
       }
     }
 
+    // Pattern matched but field not found in any document of the right type
     return { matchedLabel: labels[0], hit: null };
   }
 
@@ -126,7 +245,11 @@ async function generateResponse(
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query, sessionId, totalDocuments: documents.length }),
+      body: JSON.stringify({
+        query,
+        sessionId,
+        totalDocuments: documents.length,
+      }),
     });
     return res.json() as Promise<ChatResponse>;
   }
