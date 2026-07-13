@@ -8,31 +8,31 @@ export type DocumentType =
   | "aadhaar_card"
   | "pan_card"
   | "passport"
-  | "student_id"      // college / student identity card
-  | "employee_id"     // company / employee card
-  | "resume"          // resume / CV
-  | "marksheet"       // academic result / marksheet
-  | "income_certificate"   // income / salary certificate
-  | "caste_certificate"    // caste / domicile / OBC etc.
-  | "bank_statement"  // bank statement / passbook
-  | "offer_letter"    // offer letter / appointment / experience letter
-  | "government_certificate"  // other govt docs (bonafide, migration, etc.)
-  | "generic";        // fallback
+  | "student_id" // college / student identity card
+  | "employee_id" // company / employee card
+  | "resume" // resume / CV
+  | "marksheet" // academic result / marksheet
+  | "income_certificate" // income / salary certificate
+  | "caste_certificate" // caste / domicile / OBC etc.
+  | "bank_statement" // bank statement / passbook
+  | "offer_letter" // offer letter / appointment / experience letter
+  | "government_certificate" // other govt docs (bonafide, migration, etc.)
+  | "generic"; // fallback
 
 // ─── RAG Chunk ────────────────────────────────────────────────────────────
 // Represents a single chunk of text from an extracted document.
 // Stored in localStorage via ragStore and passed to /api/chat for retrieval.
 
 export interface Chunk {
-  id: string;          // "<documentId>-chunk-<index>"
+  id: string; // "<documentId>-chunk-<index>"
   documentId: string;
   documentName: string;
-  documentType?: DocumentType;  // for context-aware retrieval
+  documentType?: DocumentType; // for context-aware retrieval
   category: DocumentCategory;
   pageNum: number;
   chunkIndex: number;
   text: string;
-  userId?: string;     // owner — for per-user isolation
+  userId?: string; // owner — for per-user isolation
 }
 
 // ─── Document ─────────────────────────────────────────────────────────────
@@ -59,7 +59,7 @@ export interface Document {
   id: string;
   name: string;
   category: DocumentCategory;
-  documentType?: DocumentType;  // fine-grained type detected during extraction
+  documentType?: DocumentType; // fine-grained type detected during extraction
   fileType: DocumentFileType;
   sizeBytes: number;
   sizeLabel: string;
@@ -72,8 +72,8 @@ export interface Document {
   summary?: string;
   extractedInfo?: ExtractedField[];
   aiSummary?: string;
-  rawText?: string;    // full extracted text — persisted for document-scoped chat
-  userId?: string;     // owner — for per-user isolation
+  rawText?: string; // full extracted text — persisted for document-scoped chat
+  userId?: string; // owner — for per-user isolation
 }
 
 export interface ExtractedField {
@@ -155,7 +155,7 @@ export interface ChatRequest {
   query: string;
   sessionId: string;
   documentIds?: string[]; // scope chat to specific docs
-  chunks?: Chunk[];       // top-K retrieved chunks — passed by client to /api/chat
+  chunks?: Chunk[]; // top-K retrieved chunks — passed by client to /api/chat
   extractedFieldHit?: ExtractedFieldHit; // direct field match — skip Groq
 }
 

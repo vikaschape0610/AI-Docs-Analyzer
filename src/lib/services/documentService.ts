@@ -253,7 +253,7 @@ export async function simulateUploadProgress(
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          text: rawText.slice(0, 6000), // cap to avoid Groq context overflow
+          text: rawText.slice(0, 12000), // Groq llama-3.3-70b supports 128k context
           filename: item.name,
         }),
       });

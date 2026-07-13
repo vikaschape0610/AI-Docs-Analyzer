@@ -1,75 +1,87 @@
-// ─── DocMind AI — Image OCR Extractor ────────────────────────────────────
-// Extracts text from image files using Tesseract.js.
-// Improvements over v1:
-//   - Supports Hindi + English (eng+hin) for Indian documents
-//   - Falls back to English-only if multi-language pack unavailable
-//   - Higher DPI canvas rendering for small/low-quality images
-//   - Returns quality metadata for downstream quality gate
-
-import Tesseract from "tesseract.js";
-
-export interface ImageExtractionResult {
-  text: string;
-  confidence: number; // 0–100, from Tesseract
-  language: string; // which language pack was used
-}
+// ─── DocMind AI — Image Text Extractor ───────────────────────────────────
+// Extracts text from image files (JPG, PNG, WEBP, etc.)
+//
+// Pipeline:
+//   1. Convert image to base64
+//   2. Send to /api/documents/ocr (Groq vision — handles any language)
+//   3. If vision fails, fall back to Tesseract (eng+hin, then eng)
+//
+// This handles: scanned Aadhaar, PAN photos, income certs, any language
 
 /**
- * Extracts text from an image File using Tesseract OCR.
- * Tries Hindi+English first (covers Indian documents), falls back to English.
+ * Primary export — extracts text from an image file.
+ * Uses Groq vision as primary, Tesseract as fallback.
  */
 export async function extractTextFromImage(file: File): Promise<string> {
-  const result = await extractTextFromImageWithMeta(file);
-  return result.text;
-}
-
-export async function extractTextFromImageWithMeta(
-  file: File,
-): Promise<ImageExtractionResult> {
-  // Try to upscale small images for better OCR accuracy
-  const processedBlob = await upscaleIfNeeded(file);
-
-  // Attempt Hindi + English (covers Aadhaar, income certs, Marathi govt docs)
+  // Step 1: Try Groq vision (far superior for any language, any script)
   try {
-    const result = await Tesseract.recognize(processedBlob, "eng+hin");
-    const text = result?.data?.text ?? "";
-    const confidence = result?.data?.confidence ?? 0;
+    const base64 = await fileToBase64(file);
+    if (base64) {
+      const res = await fetch("/api/documents/ocr", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          imageBase64: base64,
+          mimeType: file.type || "image/jpeg",
+          pageNum: 1,
+        }),
+      });
 
-    if (text.trim().length > 10) {
-      return { text: text.trim(), confidence, language: "eng+hin" };
+      if (res.ok) {
+        const data = (await res.json()) as { text?: string; error?: string };
+        const visionText = data.text?.trim() ?? "";
+        if (visionText.length > 10) {
+          console.log(
+            `[imageExtractor] Groq vision extracted ${visionText.length} chars from ${file.name}`,
+          );
+          return visionText;
+        }
+      }
     }
-  } catch {
-    // eng+hin traineddata not loaded; fall through to English-only
+  } catch (err) {
+    console.warn("[imageExtractor] Groq vision failed, trying Tesseract:", err);
   }
 
-  // Fallback: English only
+  // Step 2: Tesseract fallback
+  return await extractWithTesseract(file);
+}
+
+// ─── Convert File to base64 string ────────────────────────────────────────
+async function fileToBase64(file: File): Promise<string | null> {
   try {
-    const result = await Tesseract.recognize(processedBlob, "eng");
-    const text = result?.data?.text ?? "";
-    const confidence = result?.data?.confidence ?? 0;
-    return { text: text.trim(), confidence, language: "eng" };
-  } catch (error) {
-    console.error("[imageExtractor] OCR failed:", error);
-    return { text: "", confidence: 0, language: "eng" };
+    // Upscale small images before sending to Groq for better recognition
+    const processedBlob = await upscaleIfNeeded(file);
+
+    return await new Promise<string | null>((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = reader.result as string;
+        // Strip the data URL prefix — only send the base64 part
+        const base64 = result.split(",")[1];
+        resolve(base64 ?? null);
+      };
+      reader.onerror = () => resolve(null);
+      reader.readAsDataURL(processedBlob);
+    });
+  } catch {
+    return null;
   }
 }
 
-/**
- * If the image is small (< 800px on any side), render it at 2× on a canvas
- * to improve Tesseract recognition accuracy.
- */
+// ─── Upscale small images for better recognition ──────────────────────────
 async function upscaleIfNeeded(file: File): Promise<Blob> {
   try {
     const bitmap = await createImageBitmap(file);
     const { width, height } = bitmap;
 
-    // Only upscale if image is small
-    if (width >= 800 && height >= 800) {
+    // If image is already large enough, return as-is
+    if (width >= 1000 && height >= 1000) {
       bitmap.close();
       return file;
     }
 
-    const scale = Math.min(3.0, Math.max(2.0, 1600 / Math.max(width, height)));
+    // Scale so the longer side is at least 1600px
+    const scale = Math.min(4.0, Math.max(1.5, 1600 / Math.max(width, height)));
     const canvas = document.createElement("canvas");
     canvas.width = Math.round(width * scale);
     canvas.height = Math.round(height * scale);
@@ -86,10 +98,40 @@ async function upscaleIfNeeded(file: File): Promise<Blob> {
     return await new Promise<Blob>((resolve, reject) =>
       canvas.toBlob(
         (b) => (b ? resolve(b) : reject(new Error("toBlob failed"))),
-        "image/png",
+        "image/jpeg",
+        0.92,
       ),
     );
   } catch {
     return file;
+  }
+}
+
+// ─── Tesseract fallback ────────────────────────────────────────────────────
+async function extractWithTesseract(file: File): Promise<string> {
+  try {
+    const processedBlob = await upscaleIfNeeded(file);
+    const Tesseract = (await import("tesseract.js")).default;
+
+    // Try Hindi + English first (covers Indian documents)
+    try {
+      const result = await Tesseract.recognize(processedBlob, "eng+hin");
+      const text = result?.data?.text?.trim() ?? "";
+      if (text.length > 10) {
+        console.log(
+          `[imageExtractor] Tesseract (eng+hin) extracted ${text.length} chars`,
+        );
+        return text;
+      }
+    } catch {
+      // eng+hin traineddata not available
+    }
+
+    // Final fallback: English only
+    const result = await Tesseract.recognize(processedBlob, "eng");
+    return result?.data?.text?.trim() ?? "";
+  } catch (err) {
+    console.error("[imageExtractor] All OCR methods failed:", err);
+    return "";
   }
 }
