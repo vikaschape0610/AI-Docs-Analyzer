@@ -76,24 +76,28 @@ export async function extractTextFromPDF(file: File): Promise<string> {
       continue;
     }
 
-    // ── Has text — but may have broken font encoding ───────────────────────
-    // Check for broken font signals:
-    //   1. Many isolated single Devanagari chars with spaces between them
-    //      e.g. "व ल" instead of "विठुल" — character mapping failure
-    //   2. High ratio of space-separated single chars in Devanagari range
-    const devanagariChars = (pageText.match(/[\u0900-\u097F]/g) ?? []).length;
-    const isolatedDevanagari = (
-      pageText.match(/(?<!\S)[\u0900-\u097F](?!\S)/g) ?? []
+    // ── Broken font detection ─────────────────────────────────────────────
+    // Maharashtra/UP govt PDFs use custom fonts with broken ToUnicode tables.
+    // pdf.js extracts individual Unicode chars but they're wrong/split.
+    // Signal: high ratio of SINGLE-character Devanagari "words" in the text.
+    // e.g. "विठुल" → "व ि ठ ु ल" → 5 single-char words instead of 1 real word.
+    // Real Devanagari text has mostly multi-char words (नामदेव, चापे, संभाजीनगर).
+    const devanagariWords = pageText.match(/[\u0900-\u097F]+/g) ?? [];
+    const singleCharDevanagariWords = devanagariWords.filter(
+      (w) => [...w].length === 1,
     ).length;
-    const brokenFontRatio =
-      devanagariChars > 5 ? isolatedDevanagari / devanagariChars : 0;
-    const hasBrokenFont = brokenFontRatio > 0.25; // >25% isolated = likely broken
+    const wordRatio =
+      devanagariWords.length > 3
+        ? singleCharDevanagariWords / devanagariWords.length
+        : 0;
+    // >= 0.25 means 1 in 4 Devanagari words is a single char — broken font
+    const hasBrokenFont = wordRatio >= 0.25;
 
     if (hasBrokenFont && pageBase64) {
       // Broken font detected — use vision to correct it
       // Send BOTH to parse route via a combined block so Groq can reconcile
       console.log(
-        `[pdfExtractor] Page ${pageNum}: broken font detected (ratio ${brokenFontRatio.toFixed(2)}) — adding vision correction`,
+        `[pdfExtractor] Page ${pageNum}: broken font detected (word ratio ${wordRatio.toFixed(2)}) — adding vision correction`,
       );
       const visionText = await callVisionOCR(pageBase64, pageNum);
 

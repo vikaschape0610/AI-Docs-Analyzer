@@ -197,12 +197,34 @@ function scoreChunk(chunk: Chunk, queryTokens: string[]): number {
     if (docNameTokens.includes(qt)) score += 0.5;
   }
 
+  // Domain mismatch penalty: penalize when query implies a category
+  // but this chunk belongs to a different category
+  // e.g. "income" query on PAN card (Identity) should lose to income cert (Government)
+  const categoryLower = chunk.category.toLowerCase();
+  const DOMAIN_CATEGORY_MAP: Record<string, string[]> = {
+    income: ["government", "financial"],
+    salary: ["career", "financial"],
+    cgpa: ["academic"],
+    sgpa: ["academic"],
+    percentage: ["academic"],
+    marksheet: ["academic"],
+    aadhaar: ["identity"],
+    passport: ["identity"],
+    bank: ["financial"],
+    offer: ["career"],
+    resume: ["career"],
+  };
+  for (const qt of queryTokens) {
+    const expected = DOMAIN_CATEGORY_MAP[qt];
+    if (expected && !expected.includes(categoryLower)) score -= 0.3;
+  }
+
   // Boost: chunk contains a key:value pattern (structured data is high-value)
   if (/[A-Za-z\s]{3,30}:\s*[^\s]/.test(chunk.text)) {
     score += 0.4;
   }
 
-  return score;
+  return Math.max(0, score);
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────

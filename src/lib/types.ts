@@ -79,7 +79,7 @@ export interface Document {
 export interface ExtractedField {
   label: string;
   value: string;
-  fieldType: "text" | "number" | "date" | "id" | "address";
+  fieldType: "text" | "number" | "date" | "id" | "address" | "url";
   confidence?: number; // 0–1, future backend field
 }
 

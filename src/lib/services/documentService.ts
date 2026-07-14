@@ -88,96 +88,111 @@ function isTextMeaningful(text: string): boolean {
   return meaningful >= 25;
 }
 
-// ─── Merge AI + regex results safely ──────────────────────────────────────
-// Strategy:
-//   - Field LABELS always come from regex (textParser) — they match chatService patterns
-//   - Field VALUES can be overridden by AI if the AI found the same label
-//   - documentType, category, tags, summary come from AI if available
-//   - thumbnailColor, thumbnailEmoji always come from regex (they depend on docType logic)
+// ─── Merge AI + regex results ──────────────────────────────────────────────
+// PHILOSOPHY:
+//   - AI (Groq) is the PRIMARY source of truth — it reads any language,
+//     handles broken fonts via dual TEXT_LAYER + VISION_OCR input, and
+//     extracts fields regex cannot know about
+//   - Regex (textParser) provides theme/emoji/tags only — structural metadata
+//   - If AI returns fields → use AI fields entirely
+//   - If AI fails → use regex fields as fallback
 function mergeParseResults(
   regexResult: ReturnType<typeof parseExtractedText>,
   aiResult: Record<string, unknown> | null,
 ): ReturnType<typeof parseExtractedText> {
-  if (!aiResult || typeof aiResult !== "object") return regexResult;
-
-  // Build a lookup of AI field values by label (case-insensitive)
-  const aiFieldMap = new Map<string, string>();
-  if (Array.isArray(aiResult.extractedFields)) {
-    for (const f of aiResult.extractedFields as {
-      label: string;
-      value: string;
-    }[]) {
-      if (f.label && f.value) {
-        aiFieldMap.set(f.label.toLowerCase().trim(), String(f.value).trim());
-      }
-    }
+  // If AI failed entirely, use regex result as-is
+  if (
+    !aiResult ||
+    typeof aiResult !== "object" ||
+    !Array.isArray(aiResult.extractedFields)
+  ) {
+    return regexResult;
   }
 
-  // Override regex field VALUES with AI values where labels match exactly
-  const mergedFields = regexResult.extractedFields.map((regexField) => {
-    const aiValue = aiFieldMap.get(regexField.label.toLowerCase());
-    if (aiValue && aiValue.length > 0 && aiValue.length < 300) {
-      return { ...regexField, value: aiValue };
-    }
-    return regexField;
-  });
-
-  // For fields the AI found that regex missed, add them (AI-only fields)
-  if (Array.isArray(aiResult.extractedFields)) {
-    const regexLabels = new Set(
-      regexResult.extractedFields.map((f) => f.label.toLowerCase()),
-    );
-    for (const aiField of aiResult.extractedFields as {
+  // AI has results — use AI fields as the complete field list
+  const aiFields = (
+    aiResult.extractedFields as Array<{
       label: string;
       value: string;
       fieldType?: string;
-    }[]) {
-      if (
-        aiField.label &&
-        aiField.value &&
-        !regexLabels.has(aiField.label.toLowerCase()) &&
-        aiField.value.length < 300
-      ) {
-        mergedFields.push({
-          label: aiField.label.trim(),
-          value: String(aiField.value).trim(),
-          fieldType:
-            (aiField.fieldType as
-              | "text"
-              | "number"
-              | "date"
-              | "id"
-              | "address") ?? "text",
-        });
-      }
-    }
-  }
+    }>
+  )
+    .filter(
+      (f) =>
+        f.label &&
+        f.value &&
+        String(f.value).trim().length > 0 &&
+        String(f.value).length < 400,
+    )
+    .map((f) => ({
+      label: String(f.label).trim(),
+      value: String(f.value).trim(),
+      fieldType:
+        (f.fieldType as
+          | "text"
+          | "number"
+          | "date"
+          | "id"
+          | "address"
+          | "url") ?? "text",
+    }));
+
+  // If AI returned no usable fields, fall back to regex
+  const finalFields =
+    aiFields.length > 0 ? aiFields : regexResult.extractedFields;
+
+  // documentType from AI — accept any string (not limited to our enum)
+  const aiDocType =
+    typeof aiResult.documentType === "string" &&
+    aiResult.documentType.trim().length > 0
+      ? aiResult.documentType.trim()
+      : null;
+
+  // Resolve to known type for theme/emoji mapping; unknown types stay as generic
+  const resolvedDocType =
+    aiDocType && isKnownDocType(aiDocType)
+      ? (aiDocType as ReturnType<typeof parseExtractedText>["documentType"])
+      : regexResult.documentType;
 
   return {
-    // AI wins for document-level metadata when available and non-empty
-    documentType:
-      typeof aiResult.documentType === "string" &&
-      aiResult.documentType !== "generic"
-        ? (aiResult.documentType as ReturnType<
-            typeof parseExtractedText
-          >["documentType"])
-        : regexResult.documentType,
+    documentType: resolvedDocType,
     category:
-      typeof aiResult.category === "string" && aiResult.category !== "Other"
+      typeof aiResult.category === "string" &&
+      aiResult.category.trim().length > 0
         ? (aiResult.category as ReturnType<
             typeof parseExtractedText
           >["category"])
         : regexResult.category,
     summary:
-      typeof aiResult.summary === "string" && aiResult.summary.length > 10
-        ? aiResult.summary
+      typeof aiResult.summary === "string" &&
+      aiResult.summary.trim().length > 10
+        ? aiResult.summary.trim()
         : regexResult.summary,
-    tags: regexResult.tags, // always use regex tags (they're derived from docType)
-    // Theme always from regex — depends on correct docType mapping
+    tags: regexResult.tags,
     thumbnailColor: regexResult.thumbnailColor,
     thumbnailEmoji: regexResult.thumbnailEmoji,
-    extractedFields: mergedFields,
+    extractedFields: finalFields,
   };
+}
+
+// Known DocumentType values for theme/emoji mapping
+const KNOWN_DOC_TYPES = new Set([
+  "aadhaar_card",
+  "pan_card",
+  "passport",
+  "student_id",
+  "employee_id",
+  "resume",
+  "marksheet",
+  "income_certificate",
+  "caste_certificate",
+  "bank_statement",
+  "offer_letter",
+  "government_certificate",
+  "generic",
+]);
+function isKnownDocType(t: string): boolean {
+  return KNOWN_DOC_TYPES.has(t);
 }
 
 // ─── Main Upload Pipeline ──────────────────────────────────────────────────

@@ -1,11 +1,13 @@
-﻿// ─── DocMind AI — Chat Service (Groq RAG + Query Intelligence) ────────────
+﻿// ─── DocMind AI — Chat Service ────────────────────────────────────────────
 //
-// Improvements over v1:
-//   - detectFieldQueryIntent now filters by document type before matching
-//     so asking "what is my income" on a marksheet doesn't get CGPA
-//   - Query normalization is shared with ragStore (same ALIAS_MAP)
-//   - Field label matching is case-insensitive for robustness
-//   - extractedFieldHit uses the best match across all docs, not first match
+// PHILOSOPHY: Since Groq now extracts fields with free-form labels in any
+// language, hardcoded label matching like "CRN / Roll No" or "Annual Income"
+// breaks when Groq returns "Name of Applicant" or "वार्षिक उत्पन्न".
+//
+// New approach — SEMANTIC field intent detection:
+//   - Score every extracted field label against the user query
+//   - Token overlap + semantic expansion handles label variations
+//   - Works regardless of what label Groq chose or what language it used
 
 import type {
   ChatMessage,
@@ -13,16 +15,15 @@ import type {
   ChatResponse,
   Document,
   DocumentReference,
-  DocumentType,
   ExtractedField,
   ExtractedFieldHit,
 } from "@/lib/types";
 
-// ─── Alias normalization — mirrors chunker.ts and ragStore.ts ─────────────
+// ─── Alias normalization ───────────────────────────────────────────────────
 const ALIAS_MAP: [RegExp, string][] = [
   [/\baadhar(?:r|aa)?\b/gi, "aadhaar"],
   [/\badhar\b/gi, "aadhaar"],
-  [/\bpan\s+card\b/gi, "pan"],
+  [/\bpan\s+card\b/gi, "pan card"],
   [/\bmark\s+sheet\b/gi, "marksheet"],
   [/\bmarks\s+sheet\b/gi, "marksheet"],
   [/\bresult\s+sheet\b/gi, "marksheet"],
@@ -33,7 +34,7 @@ const ALIAS_MAP: [RegExp, string][] = [
   [/\benrollment\s+no\b/gi, "enrollment number"],
 ];
 
-function normalizeQuery(query: string): string {
+export function normalizeQuery(query: string): string {
   let q = query;
   for (const [pattern, replacement] of ALIAS_MAP) {
     q = q.replace(pattern, replacement);
@@ -41,6 +42,7 @@ function normalizeQuery(query: string): string {
   return q;
 }
 
+// ─── Greeting detection ────────────────────────────────────────────────────
 const GREETING_PATTERNS = [
   /^h(i|ello|ey)\b/i,
   /^good\s+(morning|afternoon|evening|night|day)\b/i,
@@ -58,171 +60,160 @@ function isGreeting(query: string): boolean {
   return GREETING_PATTERNS.some((p) => p.test(query.toLowerCase().trim()));
 }
 
-// ─── Field Intent Patterns ────────────────────────────────────────────────
-// Each entry: query patterns, the exact field labels to look for,
-// and optionally the document types that hold these fields.
-// documentTypes restricts which documents are searched for this field.
-// This prevents cross-contamination (e.g. "income" should not match marksheet).
+// ─── Semantic field intent detection ──────────────────────────────────────
+// Scores every extracted field label against the user query using token
+// overlap + semantic expansion. Works with ANY label in ANY language.
 
-interface FieldIntentRule {
-  labels: string[];
-  patterns: RegExp[];
-  documentTypes?: DocumentType[]; // if set, only search these doc types
+const FIELD_QUERY_STOP_WORDS = new Set([
+  "what",
+  "is",
+  "my",
+  "the",
+  "a",
+  "an",
+  "of",
+  "in",
+  "on",
+  "at",
+  "for",
+  "to",
+  "and",
+  "or",
+  "tell",
+  "me",
+  "show",
+  "give",
+  "find",
+  "get",
+  "your",
+  "their",
+  "his",
+  "her",
+  "its",
+  "please",
+  "can",
+  "you",
+  "i",
+  "we",
+  "do",
+  "does",
+  "has",
+  "have",
+  "are",
+  "was",
+  "were",
+  "whats",
+  "hows",
+  "which",
+  "when",
+  "where",
+  "document",
+  "from",
+]);
+
+function tokenizeForIntent(text: string): string[] {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter((t) => t.length > 1 && !FIELD_QUERY_STOP_WORDS.has(t));
 }
 
-const FIELD_INTENT_PATTERNS: FieldIntentRule[] = [
-  {
-    labels: ["Aadhaar Number"],
-    patterns: [/aadhaar|aadhar|adhar|uid\s*number/i],
-    documentTypes: ["aadhaar_card"],
-  },
-  {
-    labels: ["PAN Number"],
-    patterns: [/pan\s*(card|number|no)?/i, /permanent\s+account/i],
-    documentTypes: ["pan_card"],
-  },
-  {
-    labels: ["Passport Number"],
-    patterns: [/passport\s*(number|no)?/i],
-    documentTypes: ["passport"],
-  },
-  {
-    labels: ["CRN / Roll No"],
-    patterns: [/crn|roll\s*(no|number)/i, /enrollment\s*(no|number)/i],
-    documentTypes: ["student_id"],
-  },
-  {
-    labels: ["Roll Number"],
-    patterns: [/roll\s*(no|number)/i, /seat\s*(no|number)/i],
-    documentTypes: ["marksheet"],
-  },
-  {
-    labels: ["Branch / Department"],
-    patterns: [/\bbranch\b|\bdepartment\b|\bdept\b/i],
-    documentTypes: ["student_id", "employee_id"],
-  },
-  {
-    labels: ["Class / Year"],
-    patterns: [/\bclass\b|\byear\b/i],
-    documentTypes: ["student_id"],
-  },
-  {
-    labels: ["Division"],
-    patterns: [/\bdivision\b|\bdiv\b/i],
-    documentTypes: ["student_id"],
-  },
-  {
-    labels: ["Certificate Number"],
-    patterns: [/certificate\s*(no|number)?|cert\s*(no|id)/i],
-    documentTypes: [
-      "income_certificate",
-      "caste_certificate",
-      "government_certificate",
-    ],
-  },
-  {
-    labels: ["Annual Income"],
-    patterns: [/income\s*(amount|rs)?|annual\s*income/i],
-    documentTypes: ["income_certificate"],
-  },
-  {
-    labels: ["CGPA"],
-    patterns: [/cgpa|cumulative\s+grade/i],
-    documentTypes: ["marksheet"],
-  },
-  {
-    labels: ["SGPA"],
-    patterns: [/sgpa|semester\s+grade/i],
-    documentTypes: ["marksheet"],
-  },
-  {
-    labels: ["Percentage"],
-    patterns: [/percentage|percent/i],
-    documentTypes: ["marksheet"],
-  },
-  {
-    labels: ["Date of Birth"],
-    patterns: [/\bdob\b|date of birth|birth\s*date/i],
-  },
-  {
-    labels: ["IFSC Code"],
-    patterns: [/ifsc/i],
-    documentTypes: ["bank_statement"],
-  },
-  {
-    labels: ["Account Number"],
-    patterns: [/account\s*(no|number)/i],
-    documentTypes: ["bank_statement"],
-  },
-  {
-    labels: ["CTC / Salary"],
-    patterns: [/\bctc\b|salary|package/i],
-    documentTypes: ["offer_letter"],
-  },
-  {
-    labels: ["Designation"],
-    patterns: [/designation|job\s*title|position/i],
-    documentTypes: ["offer_letter", "employee_id"],
-  },
-  {
-    labels: ["Institute"],
-    patterns: [/institute|college\s*name/i],
-    documentTypes: ["student_id"],
-  },
-  {
-    labels: ["University / Board"],
-    patterns: [/university|board/i],
-    documentTypes: ["marksheet"],
-  },
-];
+// Semantic expansions: related terms that should match together
+const SEMANTIC_EXPANSIONS: Record<string, string[]> = {
+  income: ["annual", "income", "salary", "earning", "yearly", "applicant"],
+  salary: ["ctc", "salary", "income", "package", "compensation"],
+  aadhaar: ["aadhaar", "uid", "unique", "identification", "aadhar"],
+  pan: ["pan", "permanent", "account"],
+  cgpa: ["cgpa", "cumulative", "gpa", "grade", "pointer"],
+  sgpa: ["sgpa", "semester", "gpa", "grade"],
+  percentage: ["percentage", "percent", "marks", "score"],
+  dob: ["birth", "born", "dob", "date"],
+  birth: ["birth", "born", "dob", "date"],
+  roll: ["roll", "seat", "enrollment", "crn", "number"],
+  crn: ["crn", "roll", "seat", "enrollment"],
+  branch: ["branch", "department", "dept", "stream"],
+  department: ["branch", "department", "dept"],
+  passport: ["passport", "travel"],
+  account: ["account", "number", "bank"],
+  ifsc: ["ifsc", "code", "bank"],
+  ctc: ["ctc", "salary", "package", "compensation"],
+  designation: ["designation", "position", "title", "role"],
+  course: ["course", "training", "program", "certification", "certificate"],
+  issued: ["issued", "date", "issue", "authority"],
+  validity: ["valid", "validity", "expiry", "expire"],
+  name: ["name", "applicant", "candidate", "holder", "student"],
+  address: ["address", "residence", "location", "place"],
+  certificate: ["certificate", "number", "cert", "id"],
+  financial: ["financial", "year", "period", "assessment"],
+  tahsil: ["tahsil", "tehsil", "office", "authority"],
+  district: ["district", "location", "place"],
+  state: ["state", "government", "shasan"],
+};
 
-/**
- * Detects if the query is asking for a specific extracted field.
- * Filters by documentType before searching so fields only come from
- * the correct document type — prevents cross-document contamination.
- */
+function expandTokens(tokens: string[]): Set<string> {
+  const expanded = new Set(tokens);
+  for (const token of tokens) {
+    const extras = SEMANTIC_EXPANSIONS[token] ?? [];
+    for (const e of extras) expanded.add(e);
+  }
+  return expanded;
+}
+
+function scoreFieldMatch(
+  fieldLabel: string,
+  queryTokens: string[],
+  expandedQuery: Set<string>,
+): number {
+  const labelTokens = tokenizeForIntent(fieldLabel);
+  if (labelTokens.length === 0) return 0;
+
+  let score = 0;
+  for (const lt of labelTokens) {
+    if (expandedQuery.has(lt)) score += 1.0;
+    for (const qt of queryTokens) {
+      if (qt.length > 3 && lt.includes(qt)) score += 0.5;
+      if (lt.length > 3 && qt.includes(lt)) score += 0.5;
+    }
+  }
+  return score;
+}
+
 function detectFieldQueryIntent(
   normalizedQuery: string,
   documents: Document[],
-): { hit: ExtractedFieldHit | null; matchedLabel: string } | null {
-  const q = normalizedQuery.toLowerCase();
+): { hit: ExtractedFieldHit | null } | null {
+  const queryTokens = tokenizeForIntent(normalizedQuery);
+  if (queryTokens.length === 0) return null;
 
-  for (const { labels, patterns, documentTypes } of FIELD_INTENT_PATTERNS) {
-    if (!patterns.some((p) => p.test(q))) continue;
+  const expandedQuery = expandTokens(queryTokens);
 
-    // Filter documents to the relevant types if specified
-    const candidateDocs = documentTypes
-      ? documents.filter((doc) =>
-          documentTypes.includes(doc.documentType ?? "generic"),
-        )
-      : documents;
+  let bestScore = 0;
+  let bestHit: ExtractedFieldHit | null = null;
+  const MIN_SCORE = 0.8;
 
-    for (const doc of candidateDocs) {
-      if (!doc.extractedInfo) continue;
-      const matched = doc.extractedInfo.find((f: ExtractedField) =>
-        labels.some((l) => f.label.toLowerCase() === l.toLowerCase()),
-      );
-      if (matched) {
-        return {
-          matchedLabel: matched.label,
-          hit: {
-            fieldLabel: matched.label,
-            fieldValue: matched.value,
-            documentName: doc.name,
-            documentId: doc.id,
-            documentType: doc.documentType,
-          },
+  for (const doc of documents) {
+    if (!doc.extractedInfo || doc.extractedInfo.length === 0) continue;
+    for (const f of doc.extractedInfo as ExtractedField[]) {
+      const score = scoreFieldMatch(f.label, queryTokens, expandedQuery);
+      if (score > bestScore) {
+        bestScore = score;
+        bestHit = {
+          fieldLabel: f.label,
+          fieldValue: f.value,
+          documentName: doc.name,
+          documentId: doc.id,
+          documentType: doc.documentType,
         };
       }
     }
-
-    // Pattern matched but field not found in any document of the right type
-    return { matchedLabel: labels[0], hit: null };
   }
 
+  if (bestScore >= MIN_SCORE && bestHit) return { hit: bestHit };
   return null;
 }
 
+// ─── Main response generator ──────────────────────────────────────────────
 async function generateResponse(
   request: ChatRequest,
   documents: Document[],
@@ -254,8 +245,9 @@ async function generateResponse(
     return res.json() as Promise<ChatResponse>;
   }
 
+  // Fast path — direct field match
   const fieldResult = detectFieldQueryIntent(normalized, documents);
-  if (fieldResult && fieldResult.hit) {
+  if (fieldResult?.hit) {
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -270,6 +262,7 @@ async function generateResponse(
     return res.json() as Promise<ChatResponse>;
   }
 
+  // RAG path
   let chunks: import("@/lib/types").Chunk[] = [];
   if (documents.length > 0) {
     try {
@@ -279,6 +272,15 @@ async function generateResponse(
       console.warn("[chatService] ragStore search failed:", err);
     }
   }
+
+  // Pass structured fields to chat route so LLM sees clean data
+  const structuredDocs = documents
+    .filter((doc) => doc.extractedInfo && doc.extractedInfo.length > 0)
+    .map((doc) => ({
+      documentName: doc.name,
+      documentType: doc.documentType,
+      fields: doc.extractedInfo as ExtractedField[],
+    }));
 
   const res = await fetch("/api/chat", {
     method: "POST",
@@ -290,6 +292,7 @@ async function generateResponse(
       chunks,
       totalDocuments: documents.length,
       allDocuments,
+      structuredDocs,
     }),
   });
 
