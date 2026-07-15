@@ -10,15 +10,45 @@ import {
   Plus,
   RotateCcw,
   Loader2,
+  MessageSquare,
+  Trash2,
+  Pencil,
+  Check,
+  X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useDocuments, useChat, useApp } from "@/contexts/AppContext";
 import { CATEGORY_CONFIG } from "@/lib/types";
-import type { Document } from "@/lib/types";
+import type { Document, ChatSession } from "@/lib/types";
 import { ChatMessageItem } from "@/components/chat/ChatMessage";
 import { WorkspaceEmpty, ChatEmpty } from "@/components/empty-states";
 
-// ─── Suggested questions (generic — no personal data) ─────────────────────
+// ─── Time-aware greeting ──────────────────────────────────────────────────
+function getGreeting(name?: string): string {
+  const hour = new Date().getHours();
+  const base =
+    hour < 5
+      ? "Good night"
+      : hour < 12
+        ? "Good morning"
+        : hour < 17
+          ? "Good afternoon"
+          : hour < 21
+            ? "Good evening"
+            : "Good night";
+  return name ? `${base}, ${name.split(" ")[0]}` : base;
+}
+
+const PLACEHOLDER_QUESTIONS = [
+  "What is my Aadhaar number?",
+  "Summarize my resume...",
+  "When does my passport expire?",
+  "What is my Semester 5 CGPA?",
+  "Find documents with my address...",
+  "What is my annual income?",
+  "What is my PAN number?",
+];
+
 const GENERIC_SUGGESTIONS = [
   "What is in my uploaded documents?",
   "Summarize my most recent document",
@@ -26,16 +56,7 @@ const GENERIC_SUGGESTIONS = [
   "What financial documents do I have?",
 ];
 
-// ─── Animated placeholder questions ──────────────────────────────────────
-const PLACEHOLDER_QUESTIONS = [
-  "What is my Aadhaar number?",
-  "Summarize my resume...",
-  "When does my passport expire?",
-  "What is my Semester 5 percentage?",
-  "Find documents with my address...",
-];
-
-// ─── Recent Document Card ─────────────────────────────────────────────────
+// ─── Recent Doc Card ──────────────────────────────────────────────────────
 function RecentDocCard({ doc }: { doc: Document }) {
   const config = CATEGORY_CONFIG[doc.category];
   return (
@@ -48,12 +69,15 @@ function RecentDocCard({ doc }: { doc: Document }) {
         <div
           className={cn(
             "w-full h-20 rounded-xl bg-gradient-to-br mb-3 flex items-center justify-center",
-            doc.thumbnailColor
+            doc.thumbnailColor,
           )}
         >
           <span className="text-3xl">{doc.thumbnailEmoji}</span>
         </div>
-        <p className="text-xs font-medium text-foreground truncate" title={doc.name}>
+        <p
+          className="text-xs font-medium text-foreground truncate"
+          title={doc.name}
+        >
           {doc.name}
         </p>
         <div className="flex items-center justify-between mt-1.5">
@@ -62,19 +86,21 @@ function RecentDocCard({ doc }: { doc: Document }) {
               "text-[10px] font-medium px-1.5 py-0.5 rounded-md border",
               config.bgClass,
               config.borderClass,
-              config.color
+              config.color,
             )}
           >
             {doc.category}
           </span>
-          <span className="text-[10px] text-muted-foreground">{doc.uploadedAtLabel}</span>
+          <span className="text-[10px] text-muted-foreground">
+            {doc.uploadedAtLabel}
+          </span>
         </div>
       </motion.div>
     </Link>
   );
 }
 
-// ─── Search / Chat Input Bar ──────────────────────────────────────────────
+// ─── Chat Input Bar ───────────────────────────────────────────────────────
 function ChatInputBar({
   value,
   onChange,
@@ -90,13 +116,6 @@ function ChatInputBar({
   placeholder?: string;
   compact?: boolean;
 }) {
-  const handleKey = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      onSend();
-    }
-  };
-
   return (
     <div className="relative group">
       {!compact && (
@@ -105,14 +124,21 @@ function ChatInputBar({
       <div
         className={cn(
           "relative flex items-end gap-3 bg-card border border-border/60 group-focus-within:border-brand/40 transition-all duration-200",
-          compact ? "rounded-2xl px-4 py-3" : "rounded-2xl px-4 py-3.5 shadow-lg"
+          compact
+            ? "rounded-2xl px-4 py-3"
+            : "rounded-2xl px-4 py-3.5 shadow-lg",
         )}
       >
         <Sparkles className="w-4 h-4 text-brand mb-0.5 shrink-0" />
         <textarea
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          onKeyDown={handleKey}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              onSend();
+            }
+          }}
           rows={1}
           placeholder={placeholder ?? "Ask anything about your documents..."}
           className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground outline-none resize-none leading-relaxed min-h-[24px] max-h-[120px]"
@@ -129,8 +155,8 @@ function ChatInputBar({
           className={cn(
             "w-8 h-8 rounded-xl flex items-center justify-center shrink-0 transition-all duration-200",
             value.trim() && !isTyping
-              ? "bg-brand text-white hover:bg-brand/90 glow-brand-sm"
-              : "bg-muted text-muted-foreground cursor-not-allowed"
+              ? "bg-brand text-white hover:bg-brand/90"
+              : "bg-muted text-muted-foreground cursor-not-allowed",
           )}
         >
           {isTyping ? (
@@ -144,10 +170,155 @@ function ChatInputBar({
   );
 }
 
+// ─── Chat History Sidebar ─────────────────────────────────────────────────
+function ChatHistorySidebar({
+  sessions,
+  activeId,
+  onSwitch,
+  onDelete,
+  onRename,
+  onNew,
+}: {
+  sessions: ChatSession[];
+  activeId: string;
+  onSwitch: (id: string) => void;
+  onDelete: (id: string) => void;
+  onRename: (id: string, title: string) => void;
+  onNew: () => void;
+}) {
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState("");
+
+  return (
+    <div className="w-56 border-r border-border/50 bg-surface/30 flex flex-col h-full shrink-0 hidden xl:flex">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-border/40">
+        <span className="text-xs font-semibold text-foreground">
+          Chat History
+        </span>
+        <button
+          onClick={onNew}
+          className="p-1 rounded-lg hover:bg-muted/40 text-muted-foreground hover:text-foreground transition-colors"
+          title="New chat"
+        >
+          <Plus className="w-3.5 h-3.5" />
+        </button>
+      </div>
+      <div className="flex-1 overflow-y-auto py-2 space-y-0.5 px-2">
+        {sessions.length === 0 && (
+          <p className="text-[11px] text-muted-foreground text-center py-6">
+            No conversations yet
+          </p>
+        )}
+        {sessions.map((s) => (
+          <div
+            key={s.id}
+            className={cn(
+              "group flex items-center gap-2 rounded-xl px-2 py-2 cursor-pointer transition-all",
+              s.id === activeId
+                ? "bg-brand/10 border border-brand/20"
+                : "hover:bg-muted/30 border border-transparent",
+            )}
+          >
+            <MessageSquare
+              className={cn(
+                "w-3 h-3 shrink-0",
+                s.id === activeId ? "text-brand" : "text-muted-foreground",
+              )}
+            />
+            {editingId === s.id ? (
+              <div className="flex-1 flex items-center gap-1">
+                <input
+                  value={editValue}
+                  onChange={(e) => setEditValue(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      onRename(s.id, editValue.trim() || s.title);
+                      setEditingId(null);
+                    }
+                    if (e.key === "Escape") setEditingId(null);
+                  }}
+                  className="flex-1 text-[11px] bg-transparent outline-none border-b border-brand/40 text-foreground min-w-0"
+                  autoFocus
+                />
+                <button
+                  onClick={() => {
+                    onRename(s.id, editValue.trim() || s.title);
+                    setEditingId(null);
+                  }}
+                  className="text-brand hover:text-brand/80"
+                >
+                  <Check className="w-3 h-3" />
+                </button>
+                <button
+                  onClick={() => setEditingId(null)}
+                  className="text-muted-foreground hover:text-foreground"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            ) : (
+              <>
+                <button
+                  className="flex-1 text-left min-w-0"
+                  onClick={() => onSwitch(s.id)}
+                >
+                  <p
+                    className={cn(
+                      "text-[11px] font-medium truncate",
+                      s.id === activeId ? "text-brand" : "text-foreground/80",
+                    )}
+                  >
+                    {s.title}
+                  </p>
+                  <p className="text-[10px] text-muted-foreground truncate">
+                    {s.messages.length} message
+                    {s.messages.length !== 1 ? "s" : ""}
+                  </p>
+                </button>
+                <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setEditingId(s.id);
+                      setEditValue(s.title);
+                    }}
+                    className="p-0.5 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    <Pencil className="w-2.5 h-2.5" />
+                  </button>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onDelete(s.id);
+                    }}
+                    className="p-0.5 rounded hover:bg-red-500/10 text-muted-foreground hover:text-red-400 transition-colors"
+                  >
+                    <Trash2 className="w-2.5 h-2.5" />
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ─── Main Workspace Page ──────────────────────────────────────────────────
 export default function WorkspacePage() {
   const { documents, hasDocuments, isLoading } = useDocuments();
-  const { messages, hasMessages, sendMessage, clearChat } = useChat();
+  const {
+    messages,
+    hasMessages,
+    sendMessage,
+    clearChat,
+    startNewChat,
+    sessions,
+    switchSession,
+    deleteSession,
+    renameSession,
+  } = useChat();
   const { state } = useApp();
 
   const [input, setInput] = useState("");
@@ -157,53 +328,47 @@ export default function WorkspacePage() {
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // De-duplicate messages by id (keep last occurrence)
   const dedupedMessages = messages.reduce<typeof messages>((acc, msg) => {
-    const existingIdx = acc.findIndex((m) => m.id === msg.id);
-    if (existingIdx >= 0) {
-      acc[existingIdx] = msg; // replace with latest
-    } else {
-      acc.push(msg);
-    }
+    const idx = acc.findIndex((m) => m.id === msg.id);
+    if (idx >= 0) acc[idx] = msg;
+    else acc.push(msg);
     return acc;
   }, []);
 
   const isAIThinking = dedupedMessages.some((m) => m.isStreaming);
 
-  // Auto-scroll
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [dedupedMessages]);
-
-  // Cycle placeholder
   useEffect(() => {
-    const interval = setInterval(() => {
-      setPlaceholderIdx((i) => (i + 1) % PLACEHOLDER_QUESTIONS.length);
-    }, 3500);
+    const interval = setInterval(
+      () => setPlaceholderIdx((i) => (i + 1) % PLACEHOLDER_QUESTIONS.length),
+      3500,
+    );
     return () => clearInterval(interval);
   }, []);
+
+  // Sync chatStarted with active session having messages
+  useEffect(() => {
+    if (messages.length > 0) setChatStarted(true);
+  }, [messages.length]);
 
   const handleSend = async (text?: string) => {
     const q = (text ?? input).trim();
     if (!q || isAIThinking) return;
-
     setInput("");
     setChatStarted(true);
     setIsTyping(true);
-
     await sendMessage(q);
     setIsTyping(false);
   };
 
-  const hour = new Date().getHours();
-  const greeting =
-    hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
+  const greeting = getGreeting(state.user?.name);
 
   // ── Hero / Search view ─────────────────────────────────────────────────
   if (!chatStarted) {
     return (
       <div className="flex flex-col items-center justify-start min-h-full px-6 py-14 mesh-bg">
-        {/* Greeting */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -218,14 +383,12 @@ export default function WorkspacePage() {
           </p>
         </motion.div>
 
-        {/* Search Bar */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.15 }}
           className="w-full max-w-2xl"
         >
-          {/* Animated placeholder text above bar */}
           {!input && (
             <div className="h-5 mb-2 text-center overflow-hidden">
               <AnimatePresence mode="wait">
@@ -242,15 +405,12 @@ export default function WorkspacePage() {
               </AnimatePresence>
             </div>
           )}
-
           <ChatInputBar
             value={input}
             onChange={setInput}
             onSend={handleSend}
             isTyping={isAIThinking}
           />
-
-          {/* Suggestion chips — only if docs exist */}
           {hasDocuments && (
             <motion.div
               initial={{ opacity: 0 }}
@@ -275,7 +435,6 @@ export default function WorkspacePage() {
           )}
         </motion.div>
 
-        {/* Content: either empty state or recent docs */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -331,62 +490,84 @@ export default function WorkspacePage() {
 
   // ── Active Chat view ───────────────────────────────────────────────────
   return (
-    <div className="flex flex-col h-full">
-      {/* Chat header */}
-      <div className="flex items-center justify-between px-6 py-4 border-b border-border/50 bg-background/80 backdrop-blur-sm shrink-0">
-        <div className="flex items-center gap-2.5">
-          <div className="w-7 h-7 rounded-lg bg-brand/15 border border-brand/25 flex items-center justify-center">
-            <Sparkles className="w-3.5 h-3.5 text-brand" />
+    <div className="flex h-full">
+      {/* Chat history sidebar */}
+      <ChatHistorySidebar
+        sessions={sessions}
+        activeId={state.activeSession.id}
+        onSwitch={(id) => {
+          switchSession(id);
+        }}
+        onDelete={deleteSession}
+        onRename={renameSession}
+        onNew={() => {
+          startNewChat();
+          setChatStarted(false);
+        }}
+      />
+
+      {/* Main chat area */}
+      <div className="flex flex-col flex-1 min-w-0">
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border/50 bg-background/80 backdrop-blur-sm shrink-0">
+          <div className="flex items-center gap-2.5">
+            <div className="w-7 h-7 rounded-lg bg-brand/15 border border-brand/25 flex items-center justify-center">
+              <Sparkles className="w-3.5 h-3.5 text-brand" />
+            </div>
+            <div>
+              <p className="text-sm font-medium text-foreground">DocMind AI</p>
+              <p className="text-[11px] text-muted-foreground">
+                {hasDocuments
+                  ? `Searching ${documents.length} document${documents.length !== 1 ? "s" : ""}`
+                  : "No documents uploaded"}
+              </p>
+            </div>
           </div>
-          <div>
-            <p className="text-sm font-medium text-foreground">DocMind AI</p>
-            <p className="text-[11px] text-muted-foreground">
-              {hasDocuments
-                ? `Searching ${documents.length} document${documents.length !== 1 ? "s" : ""}`
-                : "No documents uploaded"}
+          <button
+            onClick={() => {
+              clearChat();
+              setChatStarted(false);
+            }}
+            className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground px-2.5 py-1.5 rounded-lg hover:bg-muted/40 transition-all"
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+            New chat
+          </button>
+        </div>
+
+        {/* Messages */}
+        <div className="flex-1 overflow-y-auto px-6 py-6 space-y-6 mesh-bg">
+          {dedupedMessages.length === 0 ? (
+            <ChatEmpty
+              hasDocuments={hasDocuments}
+              onSuggest={(q) => handleSend(q)}
+            />
+          ) : (
+            dedupedMessages.map((msg) => (
+              <ChatMessageItem
+                key={`${msg.id}-${msg.isStreaming}`}
+                message={msg}
+              />
+            ))
+          )}
+          <div ref={messagesEndRef} />
+        </div>
+
+        {/* Input */}
+        <div className="px-6 py-4 border-t border-border/50 bg-background/80 backdrop-blur-sm shrink-0">
+          <div className="max-w-3xl mx-auto">
+            <ChatInputBar
+              value={input}
+              onChange={setInput}
+              onSend={handleSend}
+              isTyping={isAIThinking}
+              compact
+            />
+            <p className="text-center text-[10px] text-muted-foreground/40 mt-2">
+              DocMind AI answers only from your documents. Verify important
+              information.
             </p>
           </div>
-        </div>
-        <button
-          onClick={() => {
-            clearChat();
-            setChatStarted(false);
-          }}
-          className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground px-2.5 py-1.5 rounded-lg hover:bg-muted/40 transition-all"
-        >
-          <RotateCcw className="w-3.5 h-3.5" />
-          New chat
-        </button>
-      </div>
-
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto px-6 py-6 space-y-6 mesh-bg">
-        {dedupedMessages.length === 0 ? (
-          <ChatEmpty
-            hasDocuments={hasDocuments}
-            onSuggest={(q) => handleSend(q)}
-          />
-        ) : (
-          dedupedMessages.map((msg) => (
-            <ChatMessageItem key={`${msg.id}-${msg.isStreaming}`} message={msg} />
-          ))
-        )}
-        <div ref={messagesEndRef} />
-      </div>
-
-      {/* Input bar */}
-      <div className="px-6 py-4 border-t border-border/50 bg-background/80 backdrop-blur-sm shrink-0">
-        <div className="max-w-3xl mx-auto">
-          <ChatInputBar
-            value={input}
-            onChange={setInput}
-            onSend={handleSend}
-            isTyping={isAIThinking}
-            compact
-          />
-          <p className="text-center text-[10px] text-muted-foreground/40 mt-2">
-            DocMind AI can make mistakes. Verify important information.
-          </p>
         </div>
       </div>
     </div>

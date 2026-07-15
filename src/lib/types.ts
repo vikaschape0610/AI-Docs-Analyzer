@@ -1,42 +1,55 @@
 // ─── DocMind AI — Shared TypeScript Interfaces ───────────────────────────
-// These types define the data contracts between the UI and the backend.
-// When the backend is ready, only the service layer needs to change —
-// the UI components remain untouched because they consume these same types.
 
-// ─── Document Type (fine-grained, drives extraction logic) ───────────────
 export type DocumentType =
   | "aadhaar_card"
   | "pan_card"
   | "passport"
-  | "student_id" // college / student identity card
-  | "employee_id" // company / employee card
-  | "resume" // resume / CV
-  | "marksheet" // academic result / marksheet
-  | "income_certificate" // income / salary certificate
-  | "caste_certificate" // caste / domicile / OBC etc.
-  | "bank_statement" // bank statement / passbook
-  | "offer_letter" // offer letter / appointment / experience letter
-  | "government_certificate" // other govt docs (bonafide, migration, etc.)
-  | "generic"; // fallback
+  | "student_id"
+  | "employee_id"
+  | "resume"
+  | "marksheet"
+  | "income_certificate"
+  | "caste_certificate"
+  | "bank_statement"
+  | "offer_letter"
+  | "driving_licence"
+  | "voter_id"
+  | "birth_certificate"
+  | "government_certificate"
+  | "generic";
+
+// ─── Upload Pipeline Stages ───────────────────────────────────────────────
+export type UploadStageKey =
+  | "upload"
+  | "ocr"
+  | "classify"
+  | "extract"
+  | "validate"
+  | "chunk"
+  | "index";
+
+export type UploadStageStatus = "pending" | "running" | "done" | "error";
+
+export interface UploadStage {
+  key: UploadStageKey;
+  label: string;
+  status: UploadStageStatus;
+}
 
 // ─── RAG Chunk ────────────────────────────────────────────────────────────
-// Represents a single chunk of text from an extracted document.
-// Stored in localStorage via ragStore and passed to /api/chat for retrieval.
-
 export interface Chunk {
-  id: string; // "<documentId>-chunk-<index>"
+  id: string;
   documentId: string;
   documentName: string;
-  documentType?: DocumentType; // for context-aware retrieval
+  documentType?: DocumentType;
   category: DocumentCategory;
   pageNum: number;
   chunkIndex: number;
   text: string;
-  userId?: string; // owner — for per-user isolation
+  userId?: string;
 }
 
 // ─── Document ─────────────────────────────────────────────────────────────
-
 export type DocumentCategory =
   | "Identity"
   | "Academic"
@@ -59,51 +72,55 @@ export interface Document {
   id: string;
   name: string;
   category: DocumentCategory;
-  documentType?: DocumentType; // fine-grained type detected during extraction
+  documentType?: DocumentType;
   fileType: DocumentFileType;
   sizeBytes: number;
   sizeLabel: string;
   pages: number;
-  uploadedAt: string; // ISO 8601
-  uploadedAtLabel: string; // human-readable relative
-  thumbnailColor: string; // gradient CSS classes
+  uploadedAt: string;
+  uploadedAtLabel: string;
+  thumbnailColor: string;
   thumbnailEmoji: string;
   tags: string[];
   summary?: string;
   extractedInfo?: ExtractedField[];
   aiSummary?: string;
-  rawText?: string; // full extracted text — persisted for document-scoped chat
-  userId?: string; // owner — for per-user isolation
+  rawText?: string;
+  userId?: string;
 }
 
 export interface ExtractedField {
   label: string;
   value: string;
   fieldType: "text" | "number" | "date" | "id" | "address" | "url";
-  confidence?: number; // 0–1, future backend field
+  confidence?: number; // 0–1
+  page?: number; // source page
+  source?: "ai" | "regex" | "vision";
 }
 
 export interface UploadQueueItem {
   id: string;
-  file?: File; // undefined for mock items
+  file?: File;
   name: string;
   sizeLabel: string;
   status: UploadStatus;
-  progress: number; // 0–100
+  progress: number;
   errorMessage?: string;
+  stages?: UploadStage[];
 }
 
 // ─── Chat ─────────────────────────────────────────────────────────────────
-
 export type MessageRole = "user" | "assistant" | "system";
 
 export type AIResponseType =
-  | "greeting" // hello, hi, thank you
-  | "document_qa" // question answered from documents
-  | "document_list" // AI returns a list of matching documents
-  | "no_documents" // user has no documents uploaded
-  | "not_found" // answer not found in documents
-  | "general"; // general AI response
+  | "greeting"
+  | "document_qa"
+  | "document_list"
+  | "no_documents"
+  | "not_found"
+  | "doc_not_found"
+  | "field_not_found"
+  | "general";
 
 export interface SourceCitation {
   documentId: string;
@@ -127,11 +144,12 @@ export interface ChatMessage {
   id: string;
   role: MessageRole;
   content: string;
-  timestamp: string; // ISO 8601
+  timestamp: string;
   responseType?: AIResponseType;
-  sources?: SourceCitation[]; // for document_qa
-  documents?: DocumentReference[]; // for document_list
-  isStreaming?: boolean; // future: streaming support
+  sources?: SourceCitation[];
+  documents?: DocumentReference[];
+  isStreaming?: boolean;
+  confidence?: "high" | "medium" | "low";
 }
 
 export interface ChatSession {
@@ -141,22 +159,37 @@ export interface ChatSession {
   messages: ChatMessage[];
 }
 
-// ─── Chat Service Request / Response ──────────────────────────────────────
-
+// ─── Reasoning pipeline types ─────────────────────────────────────────────
 export interface ExtractedFieldHit {
   fieldLabel: string;
   fieldValue: string;
   documentName: string;
   documentId: string;
   documentType?: DocumentType;
+  confidence?: number;
+  page?: number;
+  source?: string;
+}
+
+export interface QueryIntent {
+  type: "field_lookup" | "summary" | "list_docs" | "comparison" | "general";
+  targetDocType?: DocumentType;
+  targetField?: string;
+  normalizedQuery: string;
 }
 
 export interface ChatRequest {
   query: string;
   sessionId: string;
-  documentIds?: string[]; // scope chat to specific docs
-  chunks?: Chunk[]; // top-K retrieved chunks — passed by client to /api/chat
-  extractedFieldHit?: ExtractedFieldHit; // direct field match — skip Groq
+  documentIds?: string[];
+  chunks?: Chunk[];
+  extractedFieldHit?: ExtractedFieldHit;
+  queryIntent?: QueryIntent;
+  structuredDocs?: {
+    documentName: string;
+    documentType?: string;
+    fields: ExtractedField[];
+  }[];
 }
 
 export interface ChatResponse {
@@ -164,7 +197,6 @@ export interface ChatResponse {
 }
 
 // ─── Upload ───────────────────────────────────────────────────────────────
-
 export interface UploadResult {
   documentId: string;
   status: "queued" | "processing" | "completed" | "failed";
@@ -172,7 +204,6 @@ export interface UploadResult {
 }
 
 // ─── App State ────────────────────────────────────────────────────────────
-
 export interface UserProfile {
   name: string;
   email: string;
@@ -183,14 +214,14 @@ export interface UserProfile {
 export interface AppState {
   documents: Document[];
   uploadQueue: UploadQueueItem[];
-  activeSession: ChatSession | null;
+  activeSession: ChatSession;
+  chatSessions: ChatSession[];
   isLoadingDocuments: boolean;
   isInitialized: boolean;
   user: UserProfile | null;
 }
 
 // ─── Category Config ──────────────────────────────────────────────────────
-
 export interface CategoryConfig {
   label: DocumentCategory;
   color: string;
@@ -250,3 +281,14 @@ export const CATEGORY_CONFIG: Record<DocumentCategory, CategoryConfig> = {
     emoji: "📎",
   },
 };
+
+// Upload pipeline stage definitions (ordered)
+export const UPLOAD_STAGES: UploadStage[] = [
+  { key: "upload", label: "File uploaded", status: "pending" },
+  { key: "ocr", label: "OCR / text extraction", status: "pending" },
+  { key: "classify", label: "Document classified", status: "pending" },
+  { key: "extract", label: "Metadata extracted", status: "pending" },
+  { key: "validate", label: "Fields validated", status: "pending" },
+  { key: "chunk", label: "Semantic chunking", status: "pending" },
+  { key: "index", label: "Indexed successfully", status: "pending" },
+];

@@ -8,41 +8,78 @@ import {
   Copy,
   CheckCheck,
   ExternalLink,
-  Download,
   FileText,
   AlertCircle,
   Upload,
+  ShieldCheck,
+  AlertTriangle,
+  Info,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { ChatMessage, SourceCitation, DocumentReference } from "@/lib/types";
+import type {
+  ChatMessage,
+  SourceCitation,
+  DocumentReference,
+} from "@/lib/types";
 import { CATEGORY_CONFIG } from "@/lib/types";
 
 // ─── Inline markdown bold/code renderer ──────────────────────────────────
 function RenderContent({ text }: { text: string }) {
-  const parts = text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
+  const lines = text.split("\n");
   return (
     <>
-      {parts.map((part, i) => {
-        if (part.startsWith("**") && part.endsWith("**")) {
-          return (
-            <strong key={i} className="font-semibold text-foreground">
-              {part.slice(2, -2)}
-            </strong>
-          );
-        }
-        if (part.startsWith("`") && part.endsWith("`")) {
-          return (
-            <code
-              key={i}
-              className="font-mono text-brand bg-brand/10 px-1.5 py-0.5 rounded text-[0.9em]"
-            >
-              {part.slice(1, -1)}
-            </code>
-          );
-        }
-        return <span key={i}>{part}</span>;
+      {lines.map((line, li) => {
+        const parts = line.split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
+        return (
+          <span key={li}>
+            {parts.map((part, i) => {
+              if (part.startsWith("**") && part.endsWith("**"))
+                return (
+                  <strong key={i} className="font-semibold text-foreground">
+                    {part.slice(2, -2)}
+                  </strong>
+                );
+              if (part.startsWith("`") && part.endsWith("`"))
+                return (
+                  <code
+                    key={i}
+                    className="font-mono text-brand bg-brand/10 px-1.5 py-0.5 rounded text-[0.9em]"
+                  >
+                    {part.slice(1, -1)}
+                  </code>
+                );
+              return <span key={i}>{part}</span>;
+            })}
+            {li < lines.length - 1 && <br />}
+          </span>
+        );
       })}
     </>
+  );
+}
+
+// ─── Confidence Badge ─────────────────────────────────────────────────────
+function ConfidenceBadge({
+  confidence,
+}: {
+  confidence: "high" | "medium" | "low";
+}) {
+  if (confidence === "high")
+    return (
+      <span className="flex items-center gap-1 text-[10px] text-green-400">
+        <ShieldCheck className="w-3 h-3" /> Verified
+      </span>
+    );
+  if (confidence === "medium")
+    return (
+      <span className="flex items-center gap-1 text-[10px] text-amber-400">
+        <AlertTriangle className="w-3 h-3" /> Partial
+      </span>
+    );
+  return (
+    <span className="flex items-center gap-1 text-[10px] text-red-400">
+      <Info className="w-3 h-3" /> Low confidence
+    </span>
   );
 }
 
@@ -53,24 +90,22 @@ export function SourceCard({ source }: { source: SourceCitation }) {
     <motion.div
       initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
-      className={cn(
-        "group flex items-start gap-3 p-3 rounded-xl border cursor-pointer",
-        "bg-surface/50 border-border/50 hover:bg-surface hover:border-brand/20",
-        "transition-all duration-150"
-      )}
+      className="group flex items-start gap-3 p-3 rounded-xl border bg-surface/50 border-border/50 hover:bg-surface hover:border-brand/20 transition-all duration-150"
     >
       <div
         className={cn(
           "w-8 h-8 rounded-lg flex items-center justify-center shrink-0 border",
           config.bgClass,
-          config.borderClass
+          config.borderClass,
         )}
       >
         <span className="text-base">{config.emoji}</span>
       </div>
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 mb-0.5">
-          <p className="text-xs font-medium text-foreground truncate">{source.documentName}</p>
+          <p className="text-xs font-medium text-foreground truncate">
+            {source.documentName}
+          </p>
           <span className="text-[10px] text-muted-foreground shrink-0">
             Page {source.page}
           </span>
@@ -92,97 +127,52 @@ export function SourceCard({ source }: { source: SourceCitation }) {
   );
 }
 
-// ─── Document Result Card (when AI returns a document reference) ──────────
+// ─── Document Result Card ─────────────────────────────────────────────────
 export function DocumentResultCard({ doc }: { doc: DocumentReference }) {
   const config = CATEGORY_CONFIG[doc.category];
   return (
     <motion.div
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
-      className={cn(
-        "flex items-center gap-3 p-3 rounded-xl border",
-        "bg-card border-border/60 hover:border-brand/25",
-        "transition-all duration-150 group"
-      )}
+      className="flex items-center gap-3 p-3 rounded-xl border bg-card border-border/60 hover:border-brand/25 transition-all duration-150 group"
     >
       <div
         className={cn(
           "w-10 h-10 rounded-xl flex items-center justify-center shrink-0 border text-xl",
-          doc.thumbnailColor.split(" ")[0],
           config.bgClass,
-          config.borderClass
+          config.borderClass,
         )}
       >
         {doc.thumbnailEmoji}
       </div>
       <div className="flex-1 min-w-0">
-        <p className="text-sm font-medium text-foreground truncate">{doc.documentName}</p>
+        <p className="text-sm font-medium text-foreground truncate">
+          {doc.documentName}
+        </p>
         <div className="flex items-center gap-2 mt-0.5">
           <span className={cn("text-[10px] font-medium", config.color)}>
             {doc.category}
           </span>
-          <span className="text-muted-foreground/40">·</span>
-          <span className="text-[10px] text-muted-foreground">{doc.sizeLabel}</span>
+          <span className="text-muted-foreground/30">·</span>
+          <span className="text-[10px] text-muted-foreground">
+            {doc.sizeLabel}
+          </span>
         </div>
       </div>
-      <div className="flex items-center gap-1 shrink-0">
-        <Link
-          href={`/workspace/documents/${doc.documentId}`}
-          className="flex items-center gap-1 text-[11px] text-brand bg-brand/10 border border-brand/20 hover:bg-brand/15 px-2.5 py-1.5 rounded-lg transition-all"
-        >
-          <FileText className="w-3 h-3" />
-          Open
-        </Link>
-        <button className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-all">
-          <Download className="w-3.5 h-3.5" />
-        </button>
-      </div>
+      <Link
+        href={`/workspace/documents/${doc.documentId}`}
+        className="opacity-0 group-hover:opacity-100 p-1.5 rounded-lg hover:bg-brand/10 text-muted-foreground hover:text-brand transition-all"
+      >
+        <ExternalLink className="w-3.5 h-3.5" />
+      </Link>
     </motion.div>
   );
 }
 
-// ─── Typing Indicator ─────────────────────────────────────────────────────
-export function TypingIndicator() {
-  return (
-    <div className="flex items-start gap-3">
-      <div className="w-7 h-7 rounded-lg bg-brand/15 border border-brand/25 flex items-center justify-center shrink-0 mt-0.5">
-        <Sparkles className="w-3.5 h-3.5 text-brand" />
-      </div>
-      <div className="bg-surface rounded-2xl rounded-tl-sm px-4 py-3 border border-border/40">
-        <div className="flex items-center gap-1.5">
-          {[0, 1, 2].map((i) => (
-            <motion.div
-              key={i}
-              className="w-1.5 h-1.5 rounded-full bg-muted-foreground"
-              animate={{ opacity: [0.3, 1, 0.3], scale: [0.8, 1.1, 0.8] }}
-              transition={{ duration: 1.2, repeat: Infinity, delay: i * 0.2 }}
-            />
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── User Message ─────────────────────────────────────────────────────────
-export function UserMessage({ message }: { message: ChatMessage }) {
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ type: "spring", stiffness: 400, damping: 30 }}
-      className="flex justify-end"
-    >
-      <div className="max-w-[80%] bg-brand/15 border border-brand/20 text-foreground rounded-2xl rounded-tr-sm px-4 py-2.5 text-sm leading-relaxed">
-        {message.content}
-      </div>
-    </motion.div>
-  );
-}
-
-// ─── AI Message ───────────────────────────────────────────────────────────
-export function AIMessage({ message }: { message: ChatMessage }) {
+// ─── Chat Message Item ────────────────────────────────────────────────────
+export function ChatMessageItem({ message }: { message: ChatMessage }) {
   const [copied, setCopied] = useState(false);
+  const isUser = message.role === "user";
 
   const handleCopy = () => {
     navigator.clipboard.writeText(message.content);
@@ -190,122 +180,140 @@ export function AIMessage({ message }: { message: ChatMessage }) {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const isNoDocuments = message.responseType === "no_documents";
-  const isNotFound = message.responseType === "not_found";
+  if (isUser) {
+    return (
+      <div className="flex justify-end">
+        <motion.div
+          initial={{ opacity: 0, x: 20, scale: 0.95 }}
+          animate={{ opacity: 1, x: 0, scale: 1 }}
+          transition={{ type: "spring", stiffness: 400, damping: 30 }}
+          className="max-w-[80%] bg-brand/15 border border-brand/20 rounded-2xl rounded-tr-sm px-4 py-2.5 text-sm text-foreground leading-relaxed"
+        >
+          <RenderContent text={message.content} />
+        </motion.div>
+      </div>
+    );
+  }
+
+  if (message.isStreaming && !message.content) {
+    return (
+      <div className="flex items-start gap-3">
+        <div className="w-7 h-7 rounded-lg bg-brand/15 border border-brand/25 flex items-center justify-center shrink-0 mt-0.5">
+          <Sparkles className="w-3.5 h-3.5 text-brand" />
+        </div>
+        <div className="bg-card rounded-2xl rounded-tl-sm px-4 py-3 border border-border/50">
+          <div className="flex gap-1.5">
+            {[0, 1, 2].map((i) => (
+              <motion.div
+                key={i}
+                className="w-1.5 h-1.5 rounded-full bg-muted-foreground"
+                animate={{ opacity: [0.3, 1, 0.3] }}
+                transition={{ duration: 1, repeat: Infinity, delay: i * 0.2 }}
+              />
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Determine response type styling
+  const isError =
+    message.responseType === "doc_not_found" ||
+    message.responseType === "field_not_found" ||
+    message.responseType === "not_found";
+  const isNoDoc = message.responseType === "no_documents";
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 12 }}
+      initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ type: "spring", stiffness: 300, damping: 25 }}
-      className="flex items-start gap-3"
+      className="flex items-start gap-3 group"
     >
-      {/* Avatar */}
-      <div className="w-7 h-7 rounded-lg bg-brand/15 border border-brand/25 flex items-center justify-center shrink-0 mt-0.5">
-        <Sparkles className="w-3.5 h-3.5 text-brand" />
+      <div
+        className={cn(
+          "w-7 h-7 rounded-lg flex items-center justify-center shrink-0 mt-0.5 border",
+          isError
+            ? "bg-amber-500/10 border-amber-500/20"
+            : isNoDoc
+              ? "bg-muted/40 border-border/60"
+              : "bg-brand/15 border-brand/25",
+        )}
+      >
+        {isError ? (
+          <AlertCircle className="w-3.5 h-3.5 text-amber-400" />
+        ) : isNoDoc ? (
+          <Upload className="w-3.5 h-3.5 text-muted-foreground" />
+        ) : (
+          <Sparkles className="w-3.5 h-3.5 text-brand" />
+        )}
       </div>
 
-      {/* Content */}
       <div className="flex-1 min-w-0 space-y-3">
-        {/* Answer bubble */}
-        {message.isStreaming ? (
-          <TypingIndicator />
-        ) : (
-          <div
-            className={cn(
-              "rounded-2xl rounded-tl-sm px-4 py-3 text-sm leading-relaxed",
-              isNoDocuments || isNotFound
-                ? "bg-surface/50 border border-border/40 text-muted-foreground"
-                : "bg-surface border border-border/40 text-foreground"
-            )}
+        <div
+          className={cn(
+            "rounded-2xl rounded-tl-sm px-4 py-3 border text-sm leading-relaxed",
+            isError
+              ? "bg-amber-500/5 border-amber-500/15 text-foreground"
+              : isNoDoc
+                ? "bg-card border-border/50 text-foreground"
+                : "bg-card border-border/50 text-foreground",
+          )}
+        >
+          <RenderContent text={message.content} />
+        </div>
+
+        {/* Confidence + copy */}
+        <div className="flex items-center gap-3 px-1">
+          {message.confidence && (
+            <ConfidenceBadge confidence={message.confidence} />
+          )}
+          <button
+            onClick={handleCopy}
+            className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors opacity-0 group-hover:opacity-100 ml-auto"
           >
-            {/* Icon for special states */}
-            {isNoDocuments && (
-              <div className="flex items-center gap-2 mb-2">
-                <Upload className="w-4 h-4 text-brand shrink-0" />
-                <span className="text-xs font-medium text-brand">No documents yet</span>
-              </div>
+            {copied ? (
+              <CheckCheck className="w-3 h-3 text-brand" />
+            ) : (
+              <Copy className="w-3 h-3" />
             )}
-            {isNotFound && (
-              <div className="flex items-center gap-2 mb-2">
-                <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
-                <span className="text-xs font-medium text-amber-400">Not found</span>
-              </div>
-            )}
-
-            {/* Main text — render with inline markdown */}
-            <div className="whitespace-pre-line">
-              <RenderContent text={message.content} />
-            </div>
-
-            {/* Upload CTA for no-documents state */}
-            {isNoDocuments && (
-              <Link
-                href="/workspace/upload"
-                className="inline-flex items-center gap-1.5 mt-3 text-xs text-brand border border-brand/25 bg-brand/10 hover:bg-brand/15 px-3 py-1.5 rounded-xl transition-all"
-              >
-                <Upload className="w-3.5 h-3.5" />
-                Upload your first document
-              </Link>
-            )}
-          </div>
-        )}
+            {copied ? "Copied" : "Copy"}
+          </button>
+        </div>
 
         {/* Sources */}
-        {!message.isStreaming && message.sources && message.sources.length > 0 && (
-          <div className="space-y-1.5">
-            <p className="text-[10px] font-semibold text-muted-foreground/50 uppercase tracking-widest pl-1">
+        {message.sources && message.sources.length > 0 && (
+          <div className="space-y-2">
+            <p className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider px-1">
               Sources
             </p>
-            {message.sources.map((src) => (
-              <SourceCard key={`${src.documentId}-${src.page}`} source={src} />
+            {message.sources.map((s, i) => (
+              <SourceCard key={i} source={s} />
             ))}
           </div>
         )}
 
-        {/* Document results */}
-        {!message.isStreaming && message.documents && message.documents.length > 0 && (
+        {/* Document references */}
+        {message.documents && message.documents.length > 0 && (
           <div className="space-y-2">
-            {message.documents.map((doc) => (
-              <DocumentResultCard key={doc.documentId} doc={doc} />
+            {message.documents.map((d) => (
+              <DocumentResultCard key={d.documentId} doc={d} />
             ))}
           </div>
         )}
 
-        {/* Footer actions */}
-        {!message.isStreaming && message.content && (
-          <div className="flex items-center gap-3 pl-1">
-            <button
-              onClick={handleCopy}
-              className="flex items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
-            >
-              {copied ? (
-                <CheckCheck className="w-3 h-3 text-brand" />
-              ) : (
-                <Copy className="w-3 h-3" />
-              )}
-              {copied ? "Copied" : "Copy"}
-            </button>
-            <span className="text-muted-foreground/25">·</span>
-            <span className="text-[11px] text-muted-foreground">
-              {new Date(message.timestamp).toLocaleTimeString("en-US", {
-                hour: "2-digit",
-                minute: "2-digit",
-              })}
-            </span>
-          </div>
+        {/* Upload CTA for no-documents state */}
+        {isNoDoc && (
+          <Link
+            href="/workspace/upload"
+            className="inline-flex items-center gap-1.5 text-xs text-brand border border-brand/25 bg-brand/10 hover:bg-brand/15 px-3 py-1.5 rounded-xl transition-all"
+          >
+            <Upload className="w-3.5 h-3.5" />
+            Upload a document
+          </Link>
         )}
       </div>
     </motion.div>
   );
 }
-
-// ─── Message Router ───────────────────────────────────────────────────────
-// Renders the correct message component based on role.
-// Deduplicates by id — if the same id appears twice, render the last one.
-export function ChatMessageItem({ message }: { message: ChatMessage }) {
-  if (message.role === "user") return <UserMessage message={message} />;
-  if (message.isStreaming) return <TypingIndicator />;
-  return <AIMessage message={message} />;
-}
-

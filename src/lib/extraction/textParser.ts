@@ -1113,6 +1113,9 @@ const DOC_TYPE_TO_CATEGORY: Record<DocumentType, DocumentCategory> = {
   bank_statement: "Financial",
   offer_letter: "Career",
   government_certificate: "Government",
+  driving_licence: "Identity",
+  voter_id: "Identity",
+  birth_certificate: "Government",
   generic: "Other",
 };
 
@@ -1167,6 +1170,18 @@ const DOC_TYPE_TO_THEME: Record<
   government_certificate: {
     emoji: "📋",
     color: "from-red-500/20 via-rose-500/10 to-pink-500/5",
+  },
+  driving_licence: {
+    emoji: "🚗",
+    color: "from-cyan-500/20 via-sky-500/10 to-blue-500/5",
+  },
+  voter_id: {
+    emoji: "🗳️",
+    color: "from-orange-500/20 via-amber-500/10 to-yellow-500/5",
+  },
+  birth_certificate: {
+    emoji: "👶",
+    color: "from-pink-500/20 via-rose-500/10 to-red-500/5",
   },
   generic: { emoji: "📄", color: "from-brand/20 via-brand/10 to-transparent" },
 };

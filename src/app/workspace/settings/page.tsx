@@ -1,7 +1,14 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { HardDrive, Shield, Bell, Trash2, ChevronRight, User } from "lucide-react";
+import {
+  HardDrive,
+  Shield,
+  Bell,
+  Trash2,
+  ChevronRight,
+  User,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useRouter } from "next/navigation";
 import { useApp, useDocuments } from "@/contexts/AppContext";
@@ -24,7 +31,11 @@ const PREFERENCES = [
 export default function SettingsPage() {
   const router = useRouter();
   const { count } = useDocuments();
-  const { state: { user }, logout, clearAllDocuments } = useApp();
+  const {
+    state: { user },
+    logout,
+    clearAllDocuments,
+  } = useApp();
 
   // Storage values would come from the backend auth/account API
   const storageUsedMB = 0; // placeholder until backend
@@ -56,7 +67,9 @@ export default function SettingsPage() {
           <div className="flex items-center gap-4 mb-5">
             <div className="w-14 h-14 rounded-2xl bg-brand/10 border border-brand/20 flex items-center justify-center shrink-0">
               {user ? (
-                <span className="text-lg font-bold text-brand">{user.avatar}</span>
+                <span className="text-lg font-bold text-brand">
+                  {user.avatar}
+                </span>
               ) : (
                 <User className="w-6 h-6 text-muted-foreground" />
               )}
@@ -66,7 +79,9 @@ export default function SettingsPage() {
                 {user ? user.name : "Your Account"}
               </p>
               <p className="text-sm text-muted-foreground">
-                {user ? "Personal Account" : "Sign in to see your profile information"}
+                {user
+                  ? "Personal Account"
+                  : "Sign in to see your profile information"}
               </p>
             </div>
             {user ? (
@@ -125,7 +140,9 @@ export default function SettingsPage() {
           <div className="space-y-3">
             <div className="flex justify-between text-sm">
               <span className="text-muted-foreground">
-                {storageUsedMB > 0 ? `${storageUsedMB} MB used` : "No documents yet"}
+                {storageUsedMB > 0
+                  ? `${storageUsedMB} MB used`
+                  : "No documents yet"}
               </span>
               <span className="text-muted-foreground">5 GB free</span>
             </div>
@@ -158,15 +175,19 @@ export default function SettingsPage() {
                 key={pref.id}
                 className={cn(
                   "w-full flex items-center gap-3 px-5 py-4 hover:bg-muted/20 transition-colors text-left group",
-                  i > 0 && "border-t border-border/40"
+                  i > 0 && "border-t border-border/40",
                 )}
               >
                 <div className="w-8 h-8 rounded-xl bg-muted/40 flex items-center justify-center shrink-0">
                   <Icon className="w-4 h-4 text-muted-foreground" />
                 </div>
                 <div className="flex-1">
-                  <p className="text-sm font-medium text-foreground">{pref.label}</p>
-                  <p className="text-xs text-muted-foreground">{pref.description}</p>
+                  <p className="text-sm font-medium text-foreground">
+                    {pref.label}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {pref.description}
+                  </p>
                 </div>
                 <ChevronRight className="w-4 h-4 text-muted-foreground/40 group-hover:text-muted-foreground transition-colors" />
               </button>
@@ -186,19 +207,17 @@ export default function SettingsPage() {
             <p className="text-sm font-semibold text-red-400">Danger Zone</p>
           </div>
           <p className="text-xs text-muted-foreground mb-4">
-            These actions are permanent and cannot be undone.
+            To delete individual documents, go to the{" "}
+            <a
+              href="/workspace/documents"
+              className="text-brand hover:underline"
+            >
+              Documents page
+            </a>{" "}
+            and use the delete button on each document or select multiple to
+            delete at once.
           </p>
           <div className="space-y-2">
-            <button
-              onClick={async () => {
-                if (window.confirm("Delete all documents? This cannot be undone.")) {
-                  await clearAllDocuments();
-                }
-              }}
-              className="text-xs text-red-400 border border-red-500/20 bg-red-500/5 hover:bg-red-500/10 px-4 py-2 rounded-xl transition-all w-full text-left"
-            >
-              Delete all documents
-            </button>
             <button className="text-xs text-red-400 border border-red-500/20 bg-red-500/5 hover:bg-red-500/10 px-4 py-2 rounded-xl transition-all w-full text-left">
               Delete account permanently
             </button>

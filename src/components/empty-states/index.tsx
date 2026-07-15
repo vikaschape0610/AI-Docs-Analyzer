@@ -106,7 +106,9 @@ export function ChatEmpty({
         <Sparkles className="w-6 h-6 text-brand" />
       </div>
       <h3 className="text-base font-semibold text-foreground mb-2">
-        {hasDocuments ? "Ask anything about your documents" : "No documents yet"}
+        {hasDocuments
+          ? "Ask anything about your documents"
+          : "No documents yet"}
       </h3>
       <p className="text-sm text-muted-foreground max-w-xs leading-relaxed mb-6">
         {hasDocuments

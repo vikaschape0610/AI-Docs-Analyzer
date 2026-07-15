@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback } from "react";
+import { useCallback, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useDropzone } from "react-dropzone";
 import {
@@ -12,10 +12,15 @@ import {
   AlertCircle,
   FileText,
   Sparkles,
+  Circle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useUploadQueue } from "@/contexts/AppContext";
-import type { UploadQueueItem, UploadStatus } from "@/lib/types";
+import type {
+  UploadQueueItem,
+  UploadStatus,
+  UploadStageStatus,
+} from "@/lib/types";
 import { UploadQueueEmpty } from "@/components/empty-states";
 
 // ─── Status config ────────────────────────────────────────────────────────
@@ -43,7 +48,7 @@ const STATUS_CONFIG: Record<
     spin: true,
   },
   processing: {
-    label: "Processing AI",
+    label: "Processing",
     color: "text-amber-400",
     bg: "bg-amber-500/10",
     icon: Sparkles,
@@ -63,6 +68,17 @@ const STATUS_CONFIG: Record<
   },
 };
 
+// ─── Stage indicator ──────────────────────────────────────────────────────
+function StageIcon({ status }: { status: UploadStageStatus }) {
+  if (status === "done")
+    return <CheckCircle2 className="w-3.5 h-3.5 text-green-400" />;
+  if (status === "running")
+    return <Loader2 className="w-3.5 h-3.5 text-brand animate-spin" />;
+  if (status === "error")
+    return <AlertCircle className="w-3.5 h-3.5 text-red-400" />;
+  return <Circle className="w-3.5 h-3.5 text-muted-foreground/30" />;
+}
+
 // ─── Queue Item Row ───────────────────────────────────────────────────────
 function QueueRow({
   item,
@@ -81,96 +97,107 @@ function QueueRow({
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, x: -20 }}
       transition={{ type: "spring", stiffness: 300, damping: 25 }}
-      className="flex items-center gap-3 bg-card border border-border/50 rounded-xl px-4 py-3"
+      className="bg-card border border-border/50 rounded-xl overflow-hidden"
     >
-      {/* File icon */}
-      <div className="w-9 h-9 rounded-lg bg-brand/10 border border-brand/20 flex items-center justify-center shrink-0">
-        <FileText className="w-4 h-4 text-brand" />
-      </div>
-
-      {/* Info + progress */}
-      <div className="flex-1 min-w-0 space-y-1.5">
-        <div className="flex items-center justify-between gap-2">
-          <p className="text-sm font-medium text-foreground truncate">
-            {item.name}
-          </p>
-          <span className="text-[10px] text-muted-foreground shrink-0">
-            {item.sizeLabel}
-          </span>
+      {/* Header row */}
+      <div className="flex items-center gap-3 px-4 py-3">
+        <div className="w-9 h-9 rounded-lg bg-brand/10 border border-brand/20 flex items-center justify-center shrink-0">
+          <FileText className="w-4 h-4 text-brand" />
         </div>
-
-        {/* Progress bar */}
-        {item.status !== "pending" && item.status !== "failed" && (
-          <div className="h-1 bg-muted/40 rounded-full overflow-hidden">
-            <motion.div
-              initial={{ width: 0 }}
-              animate={{ width: `${item.progress}%` }}
-              transition={{ duration: 0.6, ease: "easeOut" }}
-              className={cn(
-                "h-full rounded-full",
-                item.status === "completed"
-                  ? "bg-green-500"
-                  : item.status === "processing"
-                    ? "bg-amber-500"
-                    : "bg-brand",
-              )}
-            />
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-sm font-medium text-foreground truncate">
+              {item.name}
+            </p>
+            <span className="text-[10px] text-muted-foreground shrink-0">
+              {item.sizeLabel}
+            </span>
           </div>
-        )}
-
-        {/* Status badge */}
-        <div className="flex items-center gap-2">
-          <span
-            className={cn(
-              "flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-md",
-              cfg.bg,
-              cfg.color,
-            )}
-          >
-            <Icon className={cn("w-3 h-3", cfg.spin && "animate-spin")} />
-            {cfg.label}
-          </span>
-          {item.status !== "pending" &&
-            item.status !== "failed" &&
-            item.status !== "completed" && (
+          <div className="flex items-center gap-2 mt-1">
+            <div
+              className={cn(
+                "flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full",
+                cfg.bg,
+                cfg.color,
+              )}
+            >
+              <Icon className={cn("w-3 h-3", cfg.spin && "animate-spin")} />
+              {cfg.label}
+            </div>
+            {item.status !== "pending" && item.progress > 0 && (
               <span className="text-[10px] text-muted-foreground">
                 {item.progress}%
               </span>
             )}
-          {item.errorMessage && (
-            <span className="text-[10px] text-red-400">
-              {item.errorMessage}
-            </span>
-          )}
+          </div>
         </div>
+        {(item.status === "pending" ||
+          item.status === "failed" ||
+          item.status === "completed") && (
+          <button
+            onClick={() => onRemove(item.id)}
+            className="p-1.5 rounded-lg hover:bg-muted/40 text-muted-foreground hover:text-foreground transition-all shrink-0"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        )}
       </div>
 
-      {/* Remove */}
-      <button
-        onClick={() => onRemove(item.id)}
-        className="p-1 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-all shrink-0"
-      >
-        <X className="w-3.5 h-3.5" />
-      </button>
+      {/* Progress bar */}
+      {item.status !== "pending" && item.status !== "failed" && (
+        <div className="px-4 pb-1">
+          <div className="h-1 bg-muted/40 rounded-full overflow-hidden">
+            <motion.div
+              initial={{ width: 0 }}
+              animate={{ width: `${item.progress}%` }}
+              transition={{ duration: 0.4, ease: "easeOut" }}
+              className={cn(
+                "h-full rounded-full",
+                item.status === "completed" ? "bg-green-400" : "bg-brand",
+              )}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Live pipeline stages */}
+      {item.stages &&
+        (item.status === "processing" || item.status === "completed") && (
+          <div className="px-4 pb-3 pt-2 grid grid-cols-2 gap-1">
+            {item.stages.map((stage) => (
+              <div key={stage.key} className="flex items-center gap-1.5">
+                <StageIcon status={stage.status} />
+                <span
+                  className={cn(
+                    "text-[10px]",
+                    stage.status === "done"
+                      ? "text-green-400"
+                      : stage.status === "running"
+                        ? "text-brand"
+                        : stage.status === "error"
+                          ? "text-red-400"
+                          : "text-muted-foreground/50",
+                  )}
+                >
+                  {stage.label}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
     </motion.div>
   );
 }
 
 // ─── Upload Page ──────────────────────────────────────────────────────────
 export default function UploadPage() {
-  const {
-    queue,
-    isEmpty,
-    completedCount,
-    totalCount,
-    enqueueFiles,
-    removeFromQueue,
-    clearQueue,
-  } = useUploadQueue();
+  const { queue, isEmpty, enqueueFiles, removeFromQueue, clearQueue } =
+    useUploadQueue();
+  const inputRef = useRef<HTMLInputElement>(null);
 
   const onDrop = useCallback(
-    (acceptedFiles: File[]) => {
-      if (acceptedFiles.length > 0) enqueueFiles(acceptedFiles);
+    (accepted: File[]) => {
+      if (accepted.length > 0) enqueueFiles(accepted);
     },
     [enqueueFiles],
   );
@@ -184,13 +211,16 @@ export default function UploadPage() {
         [".docx"],
     },
     maxSize: 50 * 1024 * 1024,
+    multiple: true,
   });
 
-  const allComplete = totalCount > 0 && completedCount === totalCount;
+  const activeCount = queue.filter(
+    (q) => q.status === "uploading" || q.status === "processing",
+  ).length;
+  const completedCount = queue.filter((q) => q.status === "completed").length;
 
   return (
-    <div className="min-h-full px-6 py-8 max-w-3xl mx-auto">
-      {/* Header */}
+    <div className="min-h-full px-6 py-8">
       <motion.div
         initial={{ opacity: 0, y: -10 }}
         animate={{ opacity: 1, y: 0 }}
@@ -200,12 +230,11 @@ export default function UploadPage() {
           Upload Documents
         </h1>
         <p className="text-muted-foreground text-sm mt-1">
-          Upload any document and let AI handle the rest — extraction,
-          summarization, and indexing.
+          Supports PDF, images (JPG, PNG), and Word documents up to 50 MB
         </p>
       </motion.div>
 
-      {/* Drop Zone */}
+      {/* Drop zone */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
@@ -214,123 +243,98 @@ export default function UploadPage() {
         <div
           {...getRootProps()}
           className={cn(
-            "relative border-2 border-dashed rounded-3xl p-12 text-center cursor-pointer transition-all duration-200 group",
+            "relative border-2 border-dashed rounded-3xl p-12 text-center cursor-pointer transition-all duration-200",
             isDragActive
               ? "border-brand bg-brand/5 scale-[1.01]"
-              : "border-border/60 hover:border-brand/40 hover:bg-brand/5",
+              : "border-border/60 hover:border-brand/40 hover:bg-brand/2",
           )}
         >
           <input {...getInputProps()} />
-
-          {/* Animated upload icon */}
-          <motion.div
-            animate={isDragActive ? { scale: 1.15, y: -8 } : { scale: 1, y: 0 }}
-            transition={{ type: "spring", stiffness: 300, damping: 20 }}
-            className="flex justify-center mb-6"
-          >
-            <div
-              className={cn(
-                "w-20 h-20 rounded-3xl border flex items-center justify-center transition-all duration-200",
+          <div className="flex flex-col items-center gap-4">
+            <motion.div
+              animate={
                 isDragActive
-                  ? "bg-brand/20 border-brand/40 glow-brand"
-                  : "bg-brand/10 border-brand/20 group-hover:bg-brand/15",
-              )}
+                  ? { scale: 1.1, rotate: 5 }
+                  : { scale: 1, rotate: 0 }
+              }
+              className="w-16 h-16 rounded-2xl bg-brand/10 border border-brand/20 flex items-center justify-center"
             >
-              <CloudUpload
-                className={cn(
-                  "w-9 h-9 transition-colors",
-                  isDragActive
-                    ? "text-brand"
-                    : "text-brand/70 group-hover:text-brand",
-                )}
-              />
+              <CloudUpload className="w-8 h-8 text-brand" />
+            </motion.div>
+            <div>
+              <p className="text-base font-medium text-foreground mb-1">
+                {isDragActive
+                  ? "Drop files here"
+                  : "Drag & drop files or click to browse"}
+              </p>
+              <p className="text-sm text-muted-foreground">
+                PDF · JPG · PNG · DOCX · Up to 50 MB
+              </p>
             </div>
-          </motion.div>
-
-          <AnimatePresence mode="wait">
-            {isDragActive ? (
-              <motion.p
-                key="drop"
-                initial={{ opacity: 0, y: 5 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0 }}
-                className="text-lg font-semibold text-brand"
-              >
-                Drop your files here!
-              </motion.p>
-            ) : (
-              <motion.div
-                key="idle"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                className="space-y-2"
-              >
-                <p className="text-base font-semibold text-foreground">
-                  Drag &amp; drop your files here
-                </p>
-                <p className="text-sm text-muted-foreground">or</p>
-                <button className="inline-flex items-center gap-2 bg-brand text-white text-sm font-medium px-5 py-2.5 rounded-xl hover:bg-brand/90 transition-all shadow-sm glow-brand-sm">
-                  Choose Files
-                </button>
-              </motion.div>
-            )}
-          </AnimatePresence>
-
-          <p className="mt-4 text-xs text-muted-foreground/50">
-            Supports PDF, DOCX, JPG, PNG · Max 50 MB per file
-          </p>
-
-          {/* AI Pipeline steps */}
-          <div className="mt-8 pt-6 border-t border-border/40 grid grid-cols-3 sm:grid-cols-5 gap-3">
-            {["Extract Text", "OCR", "Categorize", "Summarize", "Index"].map(
-              (step, i) => (
-                <div key={step} className="flex flex-col items-center gap-1.5">
-                  <div className="w-7 h-7 rounded-full bg-brand/10 border border-brand/20 flex items-center justify-center text-[10px] font-bold text-brand">
-                    {i + 1}
-                  </div>
-                  <span className="text-[10px] text-muted-foreground text-center">
-                    {step}
-                  </span>
-                </div>
-              ),
-            )}
+            <button
+              type="button"
+              className="flex items-center gap-2 bg-brand text-white text-sm font-medium px-5 py-2.5 rounded-xl hover:bg-brand/90 transition-colors"
+              onClick={(e) => {
+                e.stopPropagation();
+                inputRef.current?.click();
+              }}
+            >
+              <Sparkles className="w-4 h-4" /> Choose Files
+            </button>
           </div>
+          <input
+            ref={inputRef}
+            type="file"
+            multiple
+            className="hidden"
+            accept=".pdf,.jpg,.jpeg,.png,.webp,.docx"
+            onChange={(e) => {
+              if (e.target.files) {
+                enqueueFiles(Array.from(e.target.files));
+                e.target.value = "";
+              }
+            }}
+          />
         </div>
       </motion.div>
 
-      {/* Upload Queue */}
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.2 }}
-        className="mt-8"
-      >
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-2">
-            <h2 className="text-sm font-medium text-foreground">
-              Upload Queue
-            </h2>
-            {totalCount > 0 && (
-              <span className="text-[11px] bg-brand/15 text-brand px-2 py-0.5 rounded-full">
-                {completedCount}/{totalCount} done
-              </span>
+      {/* Queue */}
+      {!isEmpty && (
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.2 }}
+          className="mt-8"
+        >
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h2 className="text-sm font-semibold text-foreground">
+                Upload Queue
+              </h2>
+              {activeCount > 0 && (
+                <p className="text-xs text-brand mt-0.5">
+                  Processing {activeCount} file{activeCount !== 1 ? "s" : ""}…
+                </p>
+              )}
+              {activeCount === 0 && completedCount > 0 && (
+                <p className="text-xs text-green-400 mt-0.5">
+                  {completedCount} file{completedCount !== 1 ? "s" : ""} ready
+                </p>
+              )}
+            </div>
+            {queue.every(
+              (q) => q.status === "completed" || q.status === "failed",
+            ) && (
+              <button
+                onClick={clearQueue}
+                className="text-xs text-muted-foreground hover:text-foreground px-3 py-1.5 rounded-lg border border-border/60 hover:border-border transition-all"
+              >
+                Clear all
+              </button>
             )}
           </div>
-          {!isEmpty && (
-            <button
-              onClick={clearQueue}
-              className="text-xs text-muted-foreground hover:text-foreground transition-colors"
-            >
-              Clear all
-            </button>
-          )}
-        </div>
-
-        {isEmpty ? (
-          <UploadQueueEmpty />
-        ) : (
-          <div className="space-y-2">
-            <AnimatePresence>
+          <div className="space-y-3">
+            <AnimatePresence mode="popLayout">
               {queue.map((item) => (
                 <QueueRow
                   key={item.id}
@@ -340,30 +344,19 @@ export default function UploadPage() {
               ))}
             </AnimatePresence>
           </div>
-        )}
+        </motion.div>
+      )}
 
-        {/* All complete banner */}
-        <AnimatePresence>
-          {allComplete && (
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              className="mt-4 p-4 bg-green-500/10 border border-green-500/20 rounded-2xl flex items-center gap-3"
-            >
-              <CheckCircle2 className="w-5 h-5 text-green-400 shrink-0" />
-              <div>
-                <p className="text-sm font-medium text-green-400">
-                  All uploads complete!
-                </p>
-                <p className="text-xs text-muted-foreground mt-0.5">
-                  Your documents are indexed and ready for AI search.
-                </p>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </motion.div>
+      {isEmpty && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: 0.3 }}
+          className="mt-12"
+        >
+          <UploadQueueEmpty />
+        </motion.div>
+      )}
     </div>
   );
 }

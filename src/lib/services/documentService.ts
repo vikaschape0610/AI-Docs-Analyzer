@@ -1,21 +1,15 @@
 // ─── DocMind AI — Document Service (Orchestration Layer) ──────────────────
-// Coordinates the full pipeline for every uploaded document:
-//   File → Type Detection → Extraction → Quality Gate → AI Parse
-//   → Merge → Chunk → RAG Index → Document Store
+// Pipeline: File → OCR → Classify → Extract (AI) → Validate → Chunk → Index
 //
-// Improvements over v1:
-//   - Removed all artificial delays (was adding ~1.8s of dead wait per upload)
-//   - Quality gate: garbage rawText is caught BEFORE it reaches Groq
-//   - AI parse result is merged carefully — regex wins for field labels/themes,
-//     AI wins for field VALUES (so labels always match chatService patterns)
-//   - structuredDocs are passed to the chat route so the LLM sees clean fields
-//   - No more silent swallowing of errors; extraction failures are surfaced
+// Stage callbacks allow the upload UI to show live progress per stage.
 
 import type {
   Document,
   UploadQueueItem,
   UploadResult,
   UploadStatus,
+  UploadStageKey,
+  UploadStageStatus,
 } from "@/lib/types";
 import {
   extractTextFromPDF,
@@ -33,33 +27,26 @@ export interface IDocumentService {
   deleteDocument(id: string): Promise<void>;
 }
 
-// ─── In-memory store ───────────────────────────────────────────────────────
 let _documents: Document[] = [];
 
 export const documentService: IDocumentService = {
-  async getDocuments(): Promise<Document[]> {
+  async getDocuments() {
     return [..._documents];
   },
-
-  async getDocumentById(id: string): Promise<Document | null> {
+  async getDocumentById(id) {
     return _documents.find((d) => d.id === id) ?? null;
   },
-
-  async uploadDocument(file: File): Promise<UploadResult> {
-    const id = `doc-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-    return { documentId: id, status: "queued" };
+  async uploadDocument(file) {
+    return { documentId: `doc-${Date.now()}`, status: "queued" };
   },
-
-  async deleteDocument(id: string): Promise<void> {
+  async deleteDocument(id) {
     _documents = _documents.filter((d) => d.id !== id);
-
-    // Also remove from RAG store (client-side only — guard for SSR)
     if (typeof window !== "undefined") {
       try {
         const { removeDocument } = await import("@/lib/ragStore");
         removeDocument(id);
       } catch {
-        // Non-fatal if RAG store removal fails
+        /* non-critical */
       }
     }
   },
@@ -69,7 +56,7 @@ export function _addDocumentToStore(doc: Document): void {
   _documents = [doc, ..._documents.filter((d) => d.id !== doc.id)];
 }
 
-// ─── File type detection ───────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────
 function getFileType(filename: string): Document["fileType"] {
   const lower = filename.toLowerCase();
   if (lower.endsWith(".pdf")) return "pdf";
@@ -78,43 +65,25 @@ function getFileType(filename: string): Document["fileType"] {
   return "other";
 }
 
-// ─── Text quality gate ─────────────────────────────────────────────────────
-// Returns true if rawText contains enough meaningful content to be processed.
-// Prevents garbage from pdf.js artifacts / blank scans reaching the LLM.
 function isTextMeaningful(text: string): boolean {
   if (!text || text.trim().length < 30) return false;
-  // Count alphanumeric characters (Latin + Devanagari)
-  const meaningful = (text.match(/[a-zA-Z0-9\u0900-\u097F]/g) ?? []).length;
-  return meaningful >= 25;
+  return (text.match(/[a-zA-Z0-9\u0900-\u097F]/g) ?? []).length >= 25;
 }
 
-// ─── Merge AI + regex results ──────────────────────────────────────────────
-// PHILOSOPHY:
-//   - AI (Groq) is the PRIMARY source of truth — it reads any language,
-//     handles broken fonts via dual TEXT_LAYER + VISION_OCR input, and
-//     extracts fields regex cannot know about
-//   - Regex (textParser) provides theme/emoji/tags only — structural metadata
-//   - If AI returns fields → use AI fields entirely
-//   - If AI fails → use regex fields as fallback
+// ─── AI-primary merge ─────────────────────────────────────────────────────
 function mergeParseResults(
   regexResult: ReturnType<typeof parseExtractedText>,
   aiResult: Record<string, unknown> | null,
 ): ReturnType<typeof parseExtractedText> {
-  // If AI failed entirely, use regex result as-is
-  if (
-    !aiResult ||
-    typeof aiResult !== "object" ||
-    !Array.isArray(aiResult.extractedFields)
-  ) {
-    return regexResult;
-  }
+  if (!aiResult || !Array.isArray(aiResult.extractedFields)) return regexResult;
 
-  // AI has results — use AI fields as the complete field list
   const aiFields = (
     aiResult.extractedFields as Array<{
       label: string;
       value: string;
       fieldType?: string;
+      confidence?: number;
+      page?: number;
     }>
   )
     .filter(
@@ -135,38 +104,53 @@ function mergeParseResults(
           | "id"
           | "address"
           | "url") ?? "text",
+      confidence: typeof f.confidence === "number" ? f.confidence : 0.85,
+      page: f.page,
+      source: "ai" as const,
     }));
 
-  // If AI returned no usable fields, fall back to regex
   const finalFields =
     aiFields.length > 0 ? aiFields : regexResult.extractedFields;
 
-  // documentType from AI — accept any string (not limited to our enum)
+  const KNOWN_TYPES = new Set([
+    "aadhaar_card",
+    "pan_card",
+    "passport",
+    "student_id",
+    "employee_id",
+    "resume",
+    "marksheet",
+    "income_certificate",
+    "caste_certificate",
+    "bank_statement",
+    "offer_letter",
+    "driving_licence",
+    "voter_id",
+    "birth_certificate",
+    "government_certificate",
+    "generic",
+  ]);
+
   const aiDocType =
-    typeof aiResult.documentType === "string" &&
-    aiResult.documentType.trim().length > 0
+    typeof aiResult.documentType === "string"
       ? aiResult.documentType.trim()
       : null;
-
-  // Resolve to known type for theme/emoji mapping; unknown types stay as generic
   const resolvedDocType =
-    aiDocType && isKnownDocType(aiDocType)
+    aiDocType && KNOWN_TYPES.has(aiDocType)
       ? (aiDocType as ReturnType<typeof parseExtractedText>["documentType"])
       : regexResult.documentType;
 
   return {
     documentType: resolvedDocType,
     category:
-      typeof aiResult.category === "string" &&
-      aiResult.category.trim().length > 0
+      typeof aiResult.category === "string"
         ? (aiResult.category as ReturnType<
             typeof parseExtractedText
           >["category"])
         : regexResult.category,
     summary:
-      typeof aiResult.summary === "string" &&
-      aiResult.summary.trim().length > 10
-        ? aiResult.summary.trim()
+      typeof aiResult.summary === "string" && aiResult.summary.length > 10
+        ? aiResult.summary
         : regexResult.summary,
     tags: regexResult.tags,
     thumbnailColor: regexResult.thumbnailColor,
@@ -175,25 +159,12 @@ function mergeParseResults(
   };
 }
 
-// Known DocumentType values for theme/emoji mapping
-const KNOWN_DOC_TYPES = new Set([
-  "aadhaar_card",
-  "pan_card",
-  "passport",
-  "student_id",
-  "employee_id",
-  "resume",
-  "marksheet",
-  "income_certificate",
-  "caste_certificate",
-  "bank_statement",
-  "offer_letter",
-  "government_certificate",
-  "generic",
-]);
-function isKnownDocType(t: string): boolean {
-  return KNOWN_DOC_TYPES.has(t);
-}
+// ─── Stage callback type ───────────────────────────────────────────────────
+type StageCallback = (
+  id: string,
+  key: UploadStageKey,
+  status: UploadStageStatus,
+) => void;
 
 // ─── Main Upload Pipeline ──────────────────────────────────────────────────
 export async function simulateUploadProgress(
@@ -201,19 +172,25 @@ export async function simulateUploadProgress(
   onProgress: (id: string, progress: number, status: UploadStatus) => void,
   onComplete: (id: string, doc?: Document) => void,
   userId?: string,
+  onStage?: StageCallback,
 ): Promise<void> {
   const fileType = getFileType(item.name);
+  const stage = (key: UploadStageKey, status: UploadStageStatus) => {
+    onStage?.(item.id, key, status);
+  };
 
-  // ── Phase 1: Start upload (0→30%) ─────────────────────────────────────
-  onProgress(item.id, 15, "uploading");
-  onProgress(item.id, 30, "uploading");
+  // ── Stage: Upload ─────────────────────────────────────────────────────
+  stage("upload", "running");
+  onProgress(item.id, 10, "uploading");
+  stage("upload", "done");
+  onProgress(item.id, 20, "uploading");
 
-  // ── Phase 2: Extract text (30→70%) ────────────────────────────────────
-  onProgress(item.id, 45, "processing");
+  // ── Stage: OCR / Extraction ───────────────────────────────────────────
+  stage("ocr", "running");
+  onProgress(item.id, 30, "processing");
 
   let rawText = "";
   let pageCount = 1;
-  let extractionError: string | null = null;
 
   if (item.file) {
     try {
@@ -226,49 +203,36 @@ export async function simulateUploadProgress(
         pageCount = count;
       } else if (fileType === "image") {
         rawText = await extractTextFromImage(item.file);
-        pageCount = 1;
       } else if (fileType === "docx") {
         rawText = await extractTextFromDocx(item.file);
-        pageCount = 1;
-      } else {
-        rawText = item.name.replace(/\.[^.]+$/, ""); // filename without extension
       }
     } catch (err) {
       console.error("[documentService] Extraction error:", err);
-      extractionError = err instanceof Error ? err.message : String(err);
       rawText = "";
     }
   }
 
-  onProgress(item.id, 70, "processing");
+  stage("ocr", isTextMeaningful(rawText) ? "done" : "error");
+  onProgress(item.id, 45, "processing");
 
-  // ── Phase 3: Quality gate + AI parse (70→95%) ─────────────────────────
-  // Use filename as fallback text only — enough to detect doc type by name
+  // ── Stage: Classify ───────────────────────────────────────────────────
+  stage("classify", "running");
   const effectiveText = isTextMeaningful(rawText) ? rawText : item.name;
-  const usedFallback = !isTextMeaningful(rawText);
-
-  if (usedFallback && extractionError) {
-    console.warn(
-      `[documentService] Extraction failed for "${item.name}": ${extractionError}. Using filename fallback.`,
-    );
-  } else if (usedFallback) {
-    console.warn(
-      `[documentService] Extracted text for "${item.name}" is below quality threshold. Using filename fallback.`,
-    );
-  }
-
-  // Run regex parser first — always reliable, no network call
   const regexResult = parseExtractedText(effectiveText, item.name);
+  stage("classify", "done");
+  onProgress(item.id, 55, "processing");
 
-  // Attempt AI parse — only if we have meaningful text (don't waste tokens on garbage)
+  // ── Stage: Extract (AI) ───────────────────────────────────────────────
+  stage("extract", "running");
   let aiResult: Record<string, unknown> | null = null;
+
   if (isTextMeaningful(rawText)) {
     try {
       const res = await fetch("/api/documents/parse", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          text: rawText.slice(0, 12000), // Groq llama-3.3-70b supports 128k context
+          text: rawText.slice(0, 12000),
           filename: item.name,
         }),
       });
@@ -277,18 +241,32 @@ export async function simulateUploadProgress(
         if (!json.error) aiResult = json;
       }
     } catch (err) {
-      console.warn("[documentService] AI parse failed, using regex only:", err);
+      console.warn("[documentService] AI parse failed:", err);
     }
   }
 
-  onProgress(item.id, 95, "processing");
-
-  // Merge results: regex labels + AI values where they match
   const parseResult = mergeParseResults(regexResult, aiResult);
+  stage("extract", parseResult.extractedFields.length > 0 ? "done" : "error");
+  onProgress(item.id, 68, "processing");
 
-  onProgress(item.id, 100, "completed");
+  // ── Stage: Validate ───────────────────────────────────────────────────
+  stage("validate", "running");
+  // Validate: remove fields with no value, dedup by label
+  const validatedFields = parseResult.extractedFields
+    .filter((f) => f.value && f.value.trim().length > 0)
+    .reduce<typeof parseResult.extractedFields>((acc, f) => {
+      if (!acc.find((x) => x.label.toLowerCase() === f.label.toLowerCase()))
+        acc.push(f);
+      return acc;
+    }, []);
+  parseResult.extractedFields = validatedFields;
+  stage("validate", "done");
+  onProgress(item.id, 78, "processing");
 
-  // ── Build final Document record ────────────────────────────────────────
+  // ── Stage: Chunk ──────────────────────────────────────────────────────
+  stage("chunk", "running");
+  onProgress(item.id, 85, "processing");
+
   const docId = `doc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
   const completedDoc: Document = {
     id: docId,
@@ -314,8 +292,12 @@ export async function simulateUploadProgress(
     userId: userId ?? undefined,
   };
 
-  // ── Phase 4: Chunk + index for RAG ────────────────────────────────────
-  // Only chunk if we have meaningful text — no point indexing filename strings
+  stage("chunk", "done");
+
+  // ── Stage: Index ──────────────────────────────────────────────────────
+  stage("index", "running");
+  onProgress(item.id, 93, "processing");
+
   if (isTextMeaningful(rawText)) {
     try {
       const [{ chunkText }, { addChunks }] = await Promise.all([
@@ -323,20 +305,14 @@ export async function simulateUploadProgress(
         import("@/lib/ragStore"),
       ]);
       const chunks = chunkText(rawText, docId, item.name, parseResult.category);
-      if (chunks.length > 0) {
-        addChunks(docId, chunks, userId);
-        console.log(
-          `[documentService] Indexed ${chunks.length} chunks for "${item.name}" (${parseResult.documentType})`,
-        );
-      }
+      if (chunks.length > 0) addChunks(docId, chunks, userId);
     } catch (err) {
-      console.warn("[documentService] Chunking/indexing failed:", err);
+      console.warn("[documentService] Indexing failed:", err);
     }
-  } else {
-    console.log(
-      `[documentService] Skipping RAG indexing for "${item.name}" — no meaningful text`,
-    );
   }
+
+  stage("index", "done");
+  onProgress(item.id, 100, "completed");
 
   _addDocumentToStore(completedDoc);
   onComplete(item.id, completedDoc);
