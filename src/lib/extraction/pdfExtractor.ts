@@ -1,21 +1,16 @@
 // ─── DocMind AI — PDF Text Extractor ─────────────────────────────────────
 //
-// THE CORE PROBLEM THIS SOLVES:
-// Government PDFs (Maharashtra, UP, etc.) use custom embedded fonts with
-// broken Unicode ToUnicode tables. pdf.js extracts text but the characters
-// are wrong — e.g. "विठुल" becomes "व ल" because the font's character map
-// is corrupt. The quality gate (checking char count) passes this as "good text"
-// because there ARE characters — they're just the wrong ones.
+// PIPELINE per page:
+//   1. Extract text layer via pdf.js (fast, perfect for digital PDFs)
+//   2. Quality gate — is the text meaningful?
+//      YES → use text layer directly
+//      NO (scanned) → render page → vision OCR → Tesseract fallback
+//   3. Broken font detection — Marathi/Hindi govt PDFs with bad ToUnicode
+//      If broken → pass BOTH text + base64 image to parse route
+//      so Groq vision can correct names/proper nouns
 //
-// SOLUTION — Dual extraction per page:
-//   - Every page: run BOTH pdf.js text extraction AND Groq vision in parallel
-//   - Send BOTH results to the parse route, clearly labelled
-//   - Groq reconciles them — vision output wins for names/proper nouns
-//     where font corruption typically strikes
-//
-// For truly digital PDFs (no font issues), text and vision agree → fast
-// For broken-font govt PDFs, vision corrects what text got wrong
-// For fully scanned PDFs, text is empty → vision is the only result
+// NOTE: renderPageToBase64 is called ONLY when broken font is detected
+// or when the page has no text (scanned). NOT for every clean page.
 
 export async function extractTextFromPDF(file: File): Promise<string> {
   const pdfjsLib = await import("pdfjs-dist");
@@ -45,75 +40,66 @@ export async function extractTextFromPDF(file: File): Promise<string> {
   for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
     const page = await pdf.getPage(pageNum);
 
-    // ── Run text extraction and vision rendering in PARALLEL ──────────────
-    const [pageText, pageBase64] = await Promise.all([
-      extractPageText(page),
-      renderPageToBase64(page, 2.5),
-    ]);
-
+    // Step 1: Try text layer extraction
+    const pageText = await extractPageText(page);
     const meaningfulChars = (pageText.match(/[a-zA-Z0-9\u0900-\u097F]/g) ?? [])
       .length;
     const hasText = meaningfulChars > 30;
 
-    if (!hasText && !pageBase64) {
-      // Nothing worked at all
-      pageResults.push(`--- Page ${pageNum} ---\n`);
-      continue;
-    }
-
     if (!hasText) {
-      // Fully scanned page — vision only
-      const visionText = pageBase64
-        ? await callVisionOCR(pageBase64, pageNum)
-        : "";
+      // Fully scanned page — render and use vision/Tesseract
+      const base64 = await renderPageToBase64(page, 2.5);
+      const visionText = base64 ? await callVisionOCR(base64, pageNum) : "";
+
       if (visionText.trim().length > 10) {
         pageResults.push(`--- Page ${pageNum} ---\n${visionText.trim()}`);
       } else {
-        // Last resort: Tesseract
         const tesseractText = await extractPageWithTesseract(page, pageNum);
-        pageResults.push(`--- Page ${pageNum} ---\n${tesseractText.trim()}`);
+        if (tesseractText.trim().length > 5) {
+          pageResults.push(`--- Page ${pageNum} ---\n${tesseractText.trim()}`);
+        } else {
+          pageResults.push(`--- Page ${pageNum} ---\n`);
+        }
       }
       continue;
     }
 
-    // ── Broken font detection ─────────────────────────────────────────────
-    // Maharashtra/UP govt PDFs use custom fonts with broken ToUnicode tables.
-    // pdf.js extracts individual Unicode chars but they're wrong/split.
-    // Signal: high ratio of SINGLE-character Devanagari "words" in the text.
-    // e.g. "विठुल" → "व ि ठ ु ल" → 5 single-char words instead of 1 real word.
-    // Real Devanagari text has mostly multi-char words (नामदेव, चापे, संभाजीनगर).
+    // Step 2: Broken font detection
+    // Marathi/Hindi govt PDFs have broken ToUnicode — multi-char words split into single chars
+    // e.g. "विठुल" → "व ि ठ ु ल" → lots of single-char Devanagari "words"
     const devanagariWords = pageText.match(/[\u0900-\u097F]+/g) ?? [];
-    const singleCharDevanagariWords = devanagariWords.filter(
+    const singleCharWords = devanagariWords.filter(
       (w) => [...w].length === 1,
     ).length;
     const wordRatio =
-      devanagariWords.length > 3
-        ? singleCharDevanagariWords / devanagariWords.length
-        : 0;
-    // >= 0.25 means 1 in 4 Devanagari words is a single char — broken font
-    const hasBrokenFont = wordRatio >= 0.25;
+      devanagariWords.length > 3 ? singleCharWords / devanagariWords.length : 0;
+    // >= 0.18: 1 in 5 Devanagari words is single-char = broken font (income cert had 0.23)
+    const hasBrokenFont = wordRatio >= 0.18;
 
-    if (hasBrokenFont && pageBase64) {
-      // Broken font detected — use vision to correct it
-      // Send BOTH to parse route via a combined block so Groq can reconcile
+    if (hasBrokenFont) {
       console.log(
-        `[pdfExtractor] Page ${pageNum}: broken font detected (word ratio ${wordRatio.toFixed(2)}) — adding vision correction`,
+        `[pdfExtractor] Page ${pageNum}: broken font (ratio ${wordRatio.toFixed(2)}) — adding vision layer`,
       );
-      const visionText = await callVisionOCR(pageBase64, pageNum);
+      // Render page for vision correction
+      const base64 = await renderPageToBase64(page, 2.5);
+      const visionText = base64 ? await callVisionOCR(base64, pageNum) : "";
 
       if (visionText.trim().length > 10) {
-        // Combine: label both clearly so Groq parse route knows which to trust
+        // Send BOTH — Groq parse route will reconcile (vision wins for names)
         pageResults.push(
           `--- Page ${pageNum} ---\n` +
             `[TEXT_LAYER — may have font encoding issues]\n${pageText}\n\n` +
             `[VISION_OCR — use this for names and proper nouns]\n${visionText.trim()}`,
         );
       } else {
-        // Vision failed — use text layer anyway (better than nothing)
+        // Vision unavailable — still send text layer, Groq will do its best
+        console.warn(
+          `[pdfExtractor] Vision unavailable for page ${pageNum}, using text layer only`,
+        );
         pageResults.push(`--- Page ${pageNum} ---\n${pageText}`);
       }
     } else {
-      // Clean digital PDF — text layer is reliable
+      // Clean digital PDF — text layer is fully reliable
       pageResults.push(`--- Page ${pageNum} ---\n${pageText}`);
     }
   }
@@ -121,11 +107,9 @@ export async function extractTextFromPDF(file: File): Promise<string> {
   return pageResults.join("\n\n").trim();
 }
 
-// ─── Extract text layer from a PDF page ───────────────────────────────────
-async function extractPageText(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  page: any,
-): Promise<string> {
+// ─── Extract text layer ────────────────────────────────────────────────────
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function extractPageText(page: any): Promise<string> {
   try {
     const textContent = await page.getTextContent();
     return (
@@ -142,7 +126,7 @@ async function extractPageText(
   }
 }
 
-// ─── Call /api/documents/ocr with a base64 image ──────────────────────────
+// ─── Call Groq vision OCR API ──────────────────────────────────────────────
 async function callVisionOCR(base64: string, pageNum: number): Promise<string> {
   try {
     const res = await fetch("/api/documents/ocr", {
@@ -155,15 +139,25 @@ async function callVisionOCR(base64: string, pageNum: number): Promise<string> {
       }),
     });
     if (!res.ok) return "";
-    const data = (await res.json()) as { text?: string };
+    const data = (await res.json()) as { text?: string; error?: string };
+    if (data.error) {
+      console.warn(
+        `[pdfExtractor] Vision OCR error page ${pageNum}:`,
+        data.error,
+      );
+      return "";
+    }
     return data.text ?? "";
   } catch (err) {
-    console.warn(`[pdfExtractor] Vision OCR failed for page ${pageNum}:`, err);
+    console.warn(
+      `[pdfExtractor] Vision OCR fetch failed page ${pageNum}:`,
+      err,
+    );
     return "";
   }
 }
 
-// ─── Tesseract last resort ─────────────────────────────────────────────────
+// ─── Tesseract fallback ────────────────────────────────────────────────────
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function extractPageWithTesseract(
   page: any,
@@ -190,12 +184,12 @@ async function extractPageWithTesseract(
       return r?.data?.text ?? "";
     }
   } catch (err) {
-    console.warn(`[pdfExtractor] Tesseract failed for page ${pageNum}:`, err);
+    console.warn(`[pdfExtractor] Tesseract failed page ${pageNum}:`, err);
     return "";
   }
 }
 
-// ─── Render a PDF page to base64 JPEG ─────────────────────────────────────
+// ─── Render page to base64 JPEG ────────────────────────────────────────────
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function renderPageToBase64(
   page: any,
@@ -216,7 +210,7 @@ async function renderPageToBase64(
   }
 }
 
-// ─── Utility exports ───────────────────────────────────────────────────────
+// ─── Utilities ─────────────────────────────────────────────────────────────
 export async function getPDFPageCount(file: File): Promise<number> {
   try {
     const pdfjsLib = await import("pdfjs-dist");

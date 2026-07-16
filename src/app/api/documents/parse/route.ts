@@ -1,9 +1,9 @@
 // ─── DocMind AI — Groq AI Document Parse API ──────────────────────────────
 // POST /api/documents/parse
 //
-// PHILOSOPHY: Groq is the brain. It reads ANY document in ANY language.
-// No hardcoded document types or field names — Groq decides everything.
-// Regex (textParser.ts) is only a fast fallback when Groq fails.
+// Groq is the brain — reads ANY document in ANY language.
+// Handles both clean text and broken-font Marathi/Hindi govt PDFs.
+// When both TEXT_LAYER and VISION_OCR are provided, Groq reconciles them.
 
 import { NextRequest } from "next/server";
 import Groq from "groq-sdk";
@@ -33,49 +33,67 @@ export async function POST(request: NextRequest) {
 
     const groq = getGroqClient();
 
-    const prompt = `You are an expert document intelligence AI. You read and understand documents in ANY language — English, Hindi, Marathi, Tamil, Telugu, Bengali, Gujarati, or any other language.
+    const hasDualInput =
+      text.includes("[TEXT_LAYER") && text.includes("[VISION_OCR");
+
+    const prompt = `You are an expert document intelligence AI specializing in Indian government documents, academic certificates, and professional documents. You read ANY language — English, Hindi, Marathi, Tamil, Telugu, Bengali, Gujarati, or any other.
 
 Document filename: "${filename ?? "unknown"}"
 
-IMPORTANT — DUAL INPUT HANDLING:
-The text below may contain two sections per page:
-  [TEXT_LAYER] — extracted by pdf.js from the PDF's text layer (fast but may have font encoding errors for Indian language PDFs)
-  [VISION_OCR] — extracted by AI vision model reading the actual page image (slower but accurate for all languages)
+${
+  hasDualInput
+    ? `DUAL INPUT HANDLING:
+This document has two extraction layers:
+  [TEXT_LAYER] — pdf.js text extraction (may have font encoding errors for Marathi/Hindi govt PDFs — words may be split into individual characters)
+  [VISION_OCR] — AI vision reading the actual page image (more accurate for names and proper nouns)
 
-When BOTH sections are present:
-- Trust [VISION_OCR] for: names of people, place names, Devanagari text, proper nouns
-- Trust [TEXT_LAYER] for: numbers, dates, IDs, codes (these encode correctly even in broken fonts)
-- If they agree → use that value
-- If they disagree on a name/word → prefer [VISION_OCR]
+Rules for dual input:
+- For NAMES of people, places, authorities: ALWAYS prefer [VISION_OCR]
+- For NUMBERS (income amounts, certificate numbers, dates, IDs): prefer [TEXT_LAYER] as numbers encode correctly even in broken fonts
+- If both agree → use that value with high confidence
+- If [TEXT_LAYER] shows garbled text like "व ल" but [VISION_OCR] shows "विठुल" → use "विठुल"
 
-Your job:
-1. Identify what type of document this is
-2. Extract ALL meaningful fields visible in the document
-3. Field VALUES stay exactly as they appear (do not translate)
-4. Field LABELS must be clear English regardless of document language
+`
+    : ""
+}EXTRACTION TASK:
+Extract ALL fields visible in this document. For Indian government certificates (income cert, caste cert, domicile cert, etc.), the following fields are typically present — extract ALL that exist:
+- Name of Applicant / Person Name
+- Certificate Number / Reference Number / जा क्रमांक
+- Annual Income / वार्षिक उत्पन्न
+- Financial Year / वर्ष
+- Date of Issue / दिनांक
+- Validity / Valid Until
+- Issuing Authority / Tahsildar / तहसीलदार
+- Tahsil Office / District / Address
+- State Government / शासन
+- Any printed metadata (OMTID, VLE Name, Printed Date, Barcode numbers)
 
-Return ONLY a valid JSON object:
+For ALL document types — extract EVERY field visible, do not skip any.
+
+Return ONLY this JSON (no markdown, no code fences):
 {
-  "documentType": "snake_case type — e.g. aadhaar_card, pan_card, passport, marksheet, income_certificate, caste_certificate, bank_statement, offer_letter, resume, student_id, employee_id, driving_licence, voter_id, birth_certificate, medical_report, insurance_policy, training_certificate, property_document, government_certificate, or any other appropriate type",
+  "documentType": "income_certificate | aadhaar_card | pan_card | passport | marksheet | caste_certificate | bank_statement | offer_letter | resume | student_id | employee_id | driving_licence | voter_id | birth_certificate | government_certificate | generic",
   "category": "Identity | Academic | Financial | Career | Government | Medical | Other",
   "extractedFields": [
     {
-      "label": "Human-readable English field name",
-      "value": "Exact value from document",
+      "label": "Field name in clear English",
+      "value": "Exact value as it appears in document",
       "fieldType": "text | number | date | id | address | url"
     }
   ],
-  "summary": "One sentence: what this document is and who it belongs to."
+  "summary": "One sentence describing this document and who it belongs to."
 }
 
 CRITICAL RULES:
-1. Extract EVERY field you can see — do not skip any.
-2. Never fabricate values. Only extract what is clearly visible.
-3. Aadhaar number is always 12 digits (XXXX XXXX XXXX). Never mislabel other numbers as Aadhaar.
-4. PAN number is always 10 chars (e.g. ABCDE1234F). Date of Birth on PAN is the person's birth date — NOT the card issue date or any other number near the QR code.
-5. Annual Income is the money amount only. A financial year like "2022-23" is NOT an income amount.
-6. Dates: preserve format exactly as shown. Hindi dates like "०७ मे २०२६" keep as-is.
-7. Return ONLY the JSON. No markdown, no code fences, no explanation.
+1. Extract EVERY field — do not skip anything visible.
+2. Never fabricate values. Only extract what is visible in the text.
+3. Aadhaar number = always 12 digits (XXXX XXXX XXXX). No other number is Aadhaar.
+4. PAN number = always 10 chars like ABCDE1234F. DOB on PAN = person's birth date only.
+5. Annual Income = rupee amount only. "2025-2026" is a financial year, NOT an income.
+6. Dates: keep exact format. Hindi dates like "०७ मे २०२६" keep as-is.
+7. For garbled Marathi text like "व ल" — interpret as a broken rendering of a name.
+8. Certificate numbers, reference numbers, barcodes = extract them all as "id" fieldType.
+9. Return ONLY the JSON object.
 
 Document text:
 ---
